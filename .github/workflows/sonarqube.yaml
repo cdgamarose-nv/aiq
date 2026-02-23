@@ -8,7 +8,7 @@ on:
 
 jobs:
   sonarqube:
-    uses: NVIDIA_AI_Blueprints/sonarqube-workflows/.github/workflows/sonarqube-reusable-template.yml@main
+    uses: NVIDIA-AI-Blueprints/sonarqube-workflows/.github/workflows/sonarqube-reusable-template.yml@main
     with:
       language: python
       organization: TEGRASW
