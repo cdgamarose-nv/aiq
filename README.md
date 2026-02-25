@@ -17,10 +17,14 @@ limitations under the License.
 -->
 <h1>NVIDIA AI-Q Blueprint</h1>
 
-> **IMPORTANT**
+> **⚠️ IMPORTANT – Active Development Branch**
 >
-> **Active Development Branch**
-> You are viewing the **`develop`** branch. This branch contains the latest features and experimental updates. For the most stable enterprise-ready version, please switch to the [main branch](https://github.com/NVIDIA-AI-Blueprints/aiq/tree/main).
+> You are currently viewing the **`develop`** branch for the pre-release version of **AI-Q v2.0**.
+> 
+> This branch contains the latest features and experimental updates and may contain breaking changes.
+>
+> For production use, switch to the **v1.2.1 stable release** on the [`main branch`](https://github.com/NVIDIA-AI-Blueprints/aiq/tree/main).
+
 
 ## Table of Contents 
 - [Overview](#overview)
