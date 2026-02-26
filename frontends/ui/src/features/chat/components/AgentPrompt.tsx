@@ -23,8 +23,8 @@ import type { PromptType } from '../types'
 
 export type { PromptType }
 
-const APPROVAL_PROMPT_TEXT =
-  'Reply approve to proceed, reject to cancel, or provide feedback to revise the plan.'
+const APPROVAL_PROMPT_RE =
+  /Reply\s+\*{0,2}approve\*{0,2}\s+to proceed,\s+\*{0,2}reject\*{0,2}\s+to cancel/i
 
 export interface AgentPromptProps {
   /** Unique identifier for this prompt */
@@ -63,7 +63,7 @@ export const AgentPrompt: FC<AgentPromptProps> = ({
   timestamp,
 }) => {
   const respondToInteractionFn = useChatStore((state) => state.respondToInteractionFn)
-  const isApprovalPrompt = content.includes(APPROVAL_PROMPT_TEXT)
+  const isApprovalPrompt = APPROVAL_PROMPT_RE.test(content)
   const showApprovalButtons = isApprovalPrompt && !isResponded && !!respondToInteractionFn
 
   const handleApprove = useCallback(() => {

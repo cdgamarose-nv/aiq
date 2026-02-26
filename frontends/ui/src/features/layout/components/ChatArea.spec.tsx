@@ -10,6 +10,7 @@ import { ChatArea } from './ChatArea'
 const mockRespondToPrompt = vi.fn()
 const mockDismissErrorCard = vi.fn()
 const mockGetThinkingStepsForMessage = vi.fn(() => [])
+const mockChatThinking = vi.fn(() => <div data-testid="chat-thinking">Thinking...</div>)
 
 vi.mock('@/features/chat', () => ({
   useChatStore: vi.fn(() => ({
@@ -32,7 +33,7 @@ vi.mock('@/features/chat', () => ({
   UserMessage: ({ content }: { content: string }) => (
     <div data-testid="user-message">{content}</div>
   ),
-  ChatThinking: () => <div data-testid="chat-thinking">Thinking...</div>,
+  ChatThinking: (props: unknown) => mockChatThinking(props),
 }))
 
 import { useChatStore } from '@/features/chat'
@@ -292,5 +293,50 @@ describe('ChatArea', () => {
     render(<ChatArea isAuthenticated={true} />)
 
     expect(screen.getByTestId('file-banner')).toBeInTheDocument()
+  })
+
+  test('keeps earlier interrupted thinking state after a later completed turn', () => {
+    mockGetThinkingStepsForMessage.mockImplementation((messageId: string) => {
+      if (messageId === 'user-1') return [{ id: 'step-1', displayName: 'Step 1' }]
+      if (messageId === 'user-2') return [{ id: 'step-2', displayName: 'Step 2' }]
+      return []
+    })
+
+    vi.mocked(useChatStore).mockReturnValue({
+      currentConversation: {
+        messages: [
+          { id: 'user-1', role: 'user', content: 'First question', messageType: 'user' },
+          { id: 'user-2', role: 'user', content: 'Second question', messageType: 'user' },
+          { id: 'answer-2', role: 'assistant', content: 'Second answer', messageType: 'agent_response' },
+        ],
+      },
+      isLoading: false,
+      isStreaming: false,
+      thinkingSteps: [],
+      respondToPrompt: mockRespondToPrompt,
+      dismissErrorCard: mockDismissErrorCard,
+      getThinkingStepsForMessage: mockGetThinkingStepsForMessage,
+    } as unknown as ReturnType<typeof useChatStore>)
+
+    render(<ChatArea isAuthenticated={true} />)
+
+    expect(mockChatThinking).toHaveBeenCalledTimes(2)
+
+    const firstCallProps = mockChatThinking.mock.calls[0][0] as {
+      isInterrupted?: boolean
+      isThinking?: boolean
+    }
+    const secondCallProps = mockChatThinking.mock.calls[1][0] as {
+      isInterrupted?: boolean
+      isThinking?: boolean
+    }
+
+    // First turn has no response before next user message -> interrupted.
+    expect(firstCallProps.isInterrupted).toBe(true)
+    expect(firstCallProps.isThinking).toBe(false)
+
+    // Second turn has a response -> done (not interrupted).
+    expect(secondCallProps.isInterrupted).toBe(false)
+    expect(secondCallProps.isThinking).toBe(false)
   })
 })

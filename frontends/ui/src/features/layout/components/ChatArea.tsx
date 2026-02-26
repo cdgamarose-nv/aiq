@@ -121,14 +121,23 @@ export const ChatArea: FC<ChatAreaProps> = ({ isAuthenticated = false, onSignIn 
             // Priority: isThinking (active) > isWaiting (HITL) > isInterrupted > done
             const shouldCheckPostState = isUserMessage && hasThinkingSteps && !isStreaming
             const remaining = shouldCheckPostState ? displayableMessages.slice(index + 1) : []
+            const nextUserMessageIndex = remaining.findIndex(
+              (m) => m.messageType === 'user' || m.role === 'user'
+            )
+            // Only evaluate status within this message turn (until next user message).
+            // This prevents later turns from overriding interrupted/waiting state.
+            const turnMessages =
+              nextUserMessageIndex >= 0
+                ? remaining.slice(0, nextUserMessageIndex)
+                : remaining
 
             // Waiting: an unresponded HITL prompt follows this user message
-            const isWaiting = shouldCheckPostState && remaining.some((m) =>
+            const isWaiting = shouldCheckPostState && turnMessages.some((m) =>
               m.messageType === 'prompt' && !m.isPromptResponded
             )
 
             // Interrupted: no actual response AND not waiting for HITL
-            const hasResponse = remaining.some((m) =>
+            const hasResponse = turnMessages.some((m) =>
               m.messageType === 'assistant' || m.messageType === 'agent_response'
             )
             const isInterrupted = shouldCheckPostState && !isWaiting && !hasResponse
