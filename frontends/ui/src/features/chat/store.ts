@@ -1546,6 +1546,38 @@ export const useChatStore = create<ChatStore>()(
           )
         },
 
+        dismissConnectionErrors: () => {
+          const { currentConversation, conversations } = get()
+          if (!currentConversation) return
+
+          const updatedMessages = currentConversation.messages.filter(
+            (msg) =>
+              !(
+                msg.messageType === 'error' &&
+                msg.errorData?.errorCode?.startsWith('connection.')
+              )
+          )
+
+          if (updatedMessages.length === currentConversation.messages.length) return
+
+          const updatedConversation: Conversation = {
+            ...currentConversation,
+            messages: updatedMessages,
+            updatedAt: new Date(),
+          }
+
+          const updatedConversations = updateConversationInList(conversations, updatedConversation)
+
+          set(
+            {
+              currentConversation: updatedConversation,
+              conversations: updatedConversations,
+            },
+            false,
+            'dismissConnectionErrors'
+          )
+        },
+
         // ============================================================
         // Actions for file upload status banners
         // ============================================================
@@ -2565,6 +2597,17 @@ export const useChatStore = create<ChatStore>()(
     { name: 'ChatStore' }
   )
 )
+
+// ============================================================
+// Selectors
+// ============================================================
+
+export const selectHasConnectionError = (state: ChatStore): boolean =>
+  state.currentConversation?.messages.some(
+    (m) =>
+      m.messageType === 'error' &&
+      m.errorData?.errorCode?.startsWith('connection.')
+  ) ?? false
 
 // ============================================================
 // Storage Event Monitoring (for debugging session clearing)

@@ -32,6 +32,7 @@ import {
 } from '@/adapters/api/websocket-client'
 import { checkBackendHealthCached, invalidateHealthCache } from '@/shared/hooks/use-backend-health'
 import { useChatStore } from '../store'
+import { useConnectionRecovery } from './use-connection-recovery'
 import { useLayoutStore } from '@/features/layout/store'
 import { WEB_SEARCH_SOURCE_ID } from '@/features/layout/data-sources'
 import { useDocumentsStore } from '@/features/documents/store'
@@ -175,6 +176,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
     findThinkingStepByFunctionName,
     addAgentPrompt,
     addErrorCard,
+    dismissConnectionErrors,
     setCurrentStatus,
     setPendingInteraction,
     clearPendingInteraction,
@@ -467,8 +469,8 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         setIsConnected(status === 'connected')
 
         if (status === 'connected') {
-          // Connection restored -- clear any stale health cache
           invalidateHealthCache()
+          dismissConnectionErrors()
           return
         }
 
@@ -505,6 +507,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
     findThinkingStepByFunctionName,
     addAgentPrompt,
     addErrorCard,
+    dismissConnectionErrors,
     setCurrentStatus,
     setPendingInteraction,
     clearPendingInteraction,
@@ -741,6 +744,9 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
       wsClientRef.current.connect()
     }
   }, [currentConversation, idToken, createCallbacks])
+
+  // Activate recovery polling when connection error cards are visible
+  useConnectionRecovery(connect)
 
   /**
    * Disconnect from WebSocket

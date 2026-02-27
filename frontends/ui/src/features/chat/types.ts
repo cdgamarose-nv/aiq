@@ -534,6 +534,8 @@ export interface ChatActions {
   addErrorCard: (code: ErrorCode, message?: string, details?: string) => void
   /** Dismiss an error card */
   dismissErrorCard: (messageId: string) => void
+  /** Dismiss all connection error cards (connection.*) from the current conversation */
+  dismissConnectionErrors: () => void
 
   // Actions for file upload status banners
 
