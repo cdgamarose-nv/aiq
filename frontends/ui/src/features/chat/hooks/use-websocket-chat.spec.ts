@@ -415,14 +415,15 @@ describe('useWebSocketChat', () => {
     // autoConnect: true creates the WebSocket client and captures callbacks
     renderWebSocketHook()
 
+    // Both intermediate steps and the isFinal guard require isStreaming=true.
+    mockStoreState.isStreaming = true
+
     // Simulate an intermediate step first to create a thinking step
     act(() => {
       capturedCallbacks.onIntermediateStep?.('Working...', 'in_progress')
     })
 
     vi.clearAllMocks()
-    // The hook now ignores stale final completions when the store is not streaming.
-    mockStoreState.isStreaming = true
 
     // Simulate final response
     act(() => {
@@ -453,6 +454,9 @@ describe('useWebSocketChat', () => {
   test('onIntermediateStep callback creates thinking step if none exists', () => {
     renderWebSocketHook()
 
+    // Intermediate steps are dropped when not streaming (stale-guard).
+    mockStoreState.isStreaming = true
+
     // Simulate intermediate step with string content - no thinking step exists yet
     act(() => {
       capturedCallbacks.onIntermediateStep?.('Thinking...', 'in_progress')
@@ -470,6 +474,9 @@ describe('useWebSocketChat', () => {
 
   test('onIntermediateStep callback appends to existing thinking step', () => {
     renderWebSocketHook()
+
+    // Intermediate steps are dropped when not streaming (stale-guard).
+    mockStoreState.isStreaming = true
 
     // First call creates a step
     act(() => {
@@ -495,6 +502,9 @@ describe('useWebSocketChat', () => {
 
   test('onIntermediateStep callback handles object content with payload', () => {
     renderWebSocketHook()
+
+    // Intermediate steps are dropped when not streaming (stale-guard).
+    mockStoreState.isStreaming = true
 
     // Simulate intermediate step with object content - creates new step
     act(() => {

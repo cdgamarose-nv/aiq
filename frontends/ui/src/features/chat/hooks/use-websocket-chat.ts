@@ -355,9 +355,14 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         }
       },
 
-      onIntermediateStep: (content: NATIntermediateStepContent | string, status: string, parentId?: string) => {
-        if (isStaleMessage(parentId)) {
-          console.warn('Dropping stale intermediate step (parent_id mismatch)', { parentId, active: wsClientRef.current?.activeParentId })
+      onIntermediateStep: (content: NATIntermediateStepContent | string, status: string, _parentId?: string) => {
+        // NAT uses an internal step ID (not the user message ID) for intermediate step parent_id,
+        // so we cannot use parent_id for stale detection here. Guard instead on isStreaming:
+        // if we are not currently streaming, the workflow that sent this step was already
+        // cancelled/disconnected, so discard it.
+        const { isStreaming: currentlyStreaming } = useChatStore.getState()
+        if (!currentlyStreaming) {
+          console.warn('Ignoring stale intermediate step -- not currently streaming')
           return
         }
         // Handle string content (legacy format)
