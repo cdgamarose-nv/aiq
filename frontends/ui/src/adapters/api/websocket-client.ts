@@ -56,8 +56,6 @@ export interface NATWebSocketClientOptions {
   reconnectAttempts?: number
   /** Delay between reconnection attempts in ms (default: 1000) */
   reconnectDelay?: number
-  /** Auth token for backend authentication */
-  authToken?: string
   /** Override WebSocket URL (uses same-origin by default, proxied through UI server) */
   websocketUrl?: string
 }
@@ -105,13 +103,7 @@ export class NATWebSocketClient {
     this.options.callbacks.onConnectionChange?.('connecting')
 
     try {
-      const baseWsUrl = this.options.websocketUrl || (await getWebSocketUrl())
-      let wsUrl = baseWsUrl
-      if (this.options.authToken) {
-        const separator = wsUrl.includes('?') ? '&' : '?'
-        wsUrl = `${wsUrl}${separator}token=${encodeURIComponent(this.options.authToken)}`
-      }
-
+      const wsUrl = this.options.websocketUrl || (await getWebSocketUrl())
       this.ws = new WebSocket(wsUrl)
       this.setupEventHandlers()
     } catch {
@@ -197,13 +189,6 @@ export class NATWebSocketClient {
    */
   isConnected = (): boolean => {
     return this.ws?.readyState === WebSocket.OPEN
-  }
-
-  /**
-   * Update the auth token (e.g., after refresh)
-   */
-  updateAuthToken = (authToken: string): void => {
-    this.options.authToken = authToken
   }
 
   /**
