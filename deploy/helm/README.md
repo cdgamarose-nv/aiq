@@ -100,7 +100,7 @@ helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n n
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
 
-Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq-web` and `2.0.0`).
+Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq2-web` and `2.0.0`).
 
 ### Override values
 
