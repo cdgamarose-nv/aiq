@@ -85,7 +85,7 @@ Download the chart archive first, then install from the local `.tgz` file:
 ```bash
 helm pull <ngc-helm-repo>/<chart-name> --version <version>
 
-helm upgrade --install aiq <chart-name>-<version>.tgz -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
@@ -100,7 +100,7 @@ helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n n
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
 
-Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq-web` and `2603.7.0`).
+Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq-web` and `2.0.0`).
 
 ### Override values
 

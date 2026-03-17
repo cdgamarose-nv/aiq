@@ -94,13 +94,13 @@ Or fetch the chart archive first, then install from the local `.tgz` file:
 ```bash
 helm pull <ngc-helm-repo>/<chart-name> --version <version>
 
-helm upgrade --install aiq <chart-name>-<version>.tgz -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
 
-Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq-web` and `2603.7.0`).
+Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq2-web` and `2.0.0`).
 
 For the full NGC chart workflow (value overrides, upgrades, troubleshooting), see `deploy/helm/README.md` in the source repository.
 
@@ -190,7 +190,7 @@ helm upgrade --install aiq <release-or-chart> -n ns-aiq \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml
 ```
 
-Replace `<release-or-chart>` with the NGC repo reference, `.tgz` file path, or `deployment-k8s/` directory depending on your [deployment method](#deploy).
+For source chart or `.tgz` deployments, use the same chart reference (e.g. `aiq2-web-2.0.0.tgz` or `deployment-k8s/`) as in your [deployment method](#deploy).
 
 ## FRAG Integration
 
@@ -201,7 +201,7 @@ To use the Foundational RAG (FRAG) config, you need a running NVIDIA RAG Bluepri
 If the RAG Blueprint is deployed in the same Kubernetes cluster, use internal service DNS:
 
 ```bash
-helm upgrade --install aiq <release-or-chart> -n ns-aiq \
+helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml \
   --set aiq.apps.backend.env.RAG_SERVER_URL=http://rag-server.<rag-namespace>.svc.cluster.local:8081/v1 \
   --set aiq.apps.backend.env.RAG_INGEST_URL=http://ingestor-server.<rag-namespace>.svc.cluster.local:8082/v1
@@ -214,7 +214,7 @@ Replace `<rag-namespace>` with the namespace where the RAG Blueprint is deployed
 If the RAG service is running outside the cluster:
 
 ```bash
-helm upgrade --install aiq <release-or-chart> -n ns-aiq \
+helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml \
   --set aiq.apps.backend.env.RAG_SERVER_URL=http://<rag-host>:8081/v1 \
   --set aiq.apps.backend.env.RAG_INGEST_URL=http://<rag-ingest-host>:8082/v1
@@ -236,7 +236,7 @@ aiq:
 ```
 
 ```bash
-helm upgrade --install aiq <release-or-chart> -n ns-aiq -f aiq-frag-values.yaml
+helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq -f aiq-frag-values.yaml
 ```
 
 For complete examples with NGC-specific flags, see `deploy/helm/README.md` in the source repository.
@@ -280,9 +280,7 @@ kubectl rollout restart deployment -n ns-aiq aiq-backend aiq-frontend
 For NGC Helm chart releases:
 
 ```bash
-helm repo update <ngc-helm-repo>
-
-helm upgrade aiq <ngc-helm-repo>/<chart-name> --version <new-version> -n ns-aiq \
+helm upgrade aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
