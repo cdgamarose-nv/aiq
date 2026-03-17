@@ -173,7 +173,6 @@ uv pip install -e ./frontends/debug        # Debug console
 uv pip install -e ./frontends/aiq_api      # Unified API (includes debug)
 
 # Install benchmarks (pick what you need)
-uv pip install -e ./frontends/benchmarks/deepresearch_bench
 uv pip install -e ./frontends/benchmarks/freshqa
 
 # Install data sources (pick what you need)

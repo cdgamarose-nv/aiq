@@ -18,8 +18,8 @@
 #   BUILD_TARGET=release docker compose --env-file ../.env -f docker-compose.yaml up -d --build
 #
 #   # Use pre-built images from registry (skip --build)
-#   BACKEND_IMAGE=nvcr.io/nvstaging/blueprint/aiq-agent:2603.7.rc0 \
-#   FRONTEND_IMAGE=nvcr.io/nvstaging/blueprint/aiq-frontend-v2:2603.7.rc0 \
+#   BACKEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-agent:2.0.0 \
+#   FRONTEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-frontend:2.0.0 \
 #   docker compose --env-file ../.env -f docker-compose.yaml up -d
 #
 # Frontend image:
