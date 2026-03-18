@@ -66,16 +66,16 @@ kubectl create secret docker-registry ngc-secret -n ns-aiq \
   --docker-password=$NGC_API_KEY
 ```
 
-### 3. Fetch the chart and install
+### 3. Pull the chart and install
 
-**Fetch, verify, then install from local file:**
+**Pull, verify, then install from local file:**
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
+helm pull https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
   --username='$oauthtoken' \
   --password=<YOUR_NGC_API_KEY>
 
-# Verify the chart was fetched correctly
+# Verify the chart was pulled correctly
 helm show chart aiq2-web-2.0.0.tgz
 
 # Install from the local file
@@ -86,10 +86,9 @@ helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq --create-namespace \
 ```
 
 - Replace `<YOUR_NGC_API_KEY>` with your NGC API key (or use `$NGC_API_KEY` if set in your environment).
-- On Helm 3.11+, you can use `helm pull` instead of `helm fetch`.
 - To avoid exposing the key in shell history, use a variable: `--password=$NGC_API_KEY`.
 
-**Optional — Install directly from the chart URL** (without fetching first):
+**Optional — Install directly from the chart URL** (without pulling first):
 
 ```bash
 helm upgrade --install aiq https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
@@ -167,7 +166,7 @@ Open [http://localhost:3000](http://localhost:3000) to access the web UI.
 
 ### Upgrade
 
-To upgrade an existing release to a newer chart version, fetch the new chart archive (same NGC URL pattern with the new version, e.g. `aiq2-web-2.0.1.tgz`) or use the new chart URL for direct install, then run:
+To upgrade an existing release to a newer chart version, pull the new chart archive (same NGC URL pattern with the new version, e.g. `aiq2-web-2.0.1.tgz`) or use the new chart URL for direct install, then run:
 
 ```bash
 helm upgrade aiq aiq2-web-2.0.0.tgz -n ns-aiq \
