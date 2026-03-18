@@ -62,45 +62,40 @@ kubectl create secret docker-registry ngc-secret -n ns-aiq \
 
 ## Deploy
 
-### Using the NGC Helm repository
+### Using the NGC Helm chart
 
-Add the NGC Helm repository and install the chart directly. This is the recommended approach for pre-built releases.
+Install the pre-built chart **aiq2-web** version **2.0.0** from the NGC Helm repository (`https://helm.ngc.nvidia.com/nvidia/blueprint/charts/`).
 
-**1. Add the repository:**
+**1. Fetch the chart and install from local file:**
 
 ```bash
-helm repo add <ngc-helm-repo> https://helm.ngc.nvidia.com/<ngc-org>/<ngc-team> \
+helm fetch https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
   --username='$oauthtoken' \
-  --password=$NGC_API_KEY
+  --password=<YOUR_NGC_API_KEY>
 
-helm repo update <ngc-helm-repo>
-```
+# Verify the chart was fetched correctly
+helm show chart aiq2-web-2.0.0.tgz
 
-Replace `<ngc-helm-repo>` with a local name for the repository, and `<ngc-org>/<ngc-team>` with the NGC organization and team provided to you.
-
-**2. Install the chart:**
-
-Install directly from the repository:
-
-```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+# Install from the local file
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq --create-namespace \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
 
-Or fetch the chart archive first, then install from the local `.tgz` file:
+Replace `<YOUR_NGC_API_KEY>` with your NGC API key (or use `$NGC_API_KEY`). On Helm 3.11+, you can use `helm pull` instead of `helm fetch`. Prefer `--password=$NGC_API_KEY` to avoid exposing the key in shell history.
+
+**2. Optional — Install directly from the chart URL** (without fetching first):
 
 ```bash
-helm pull <ngc-helm-repo>/<chart-name> --version <version>
-
-helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+helm upgrade --install aiq https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
+  --username='$oauthtoken' \
+  --password=$NGC_API_KEY \
+  -n ns-aiq --create-namespace \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
-
-Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq2-web` and `2.0.0`).
 
 For the full NGC chart workflow (value overrides, upgrades, troubleshooting), see `deploy/helm/README.md` in the source repository.
 
@@ -186,11 +181,14 @@ The backend loads a workflow config at startup. Switch configs with `--set`:
 | `configs/config_web_frag.yml` | Foundational RAG mode (requires a running RAG service) |
 
 ```bash
-helm upgrade --install aiq <release-or-chart> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+  --wait --timeout 10m \
+  --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
+  --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml
 ```
 
-For source chart or `.tgz` deployments, use the same chart reference (e.g. `aiq2-web-2.0.0.tgz` or `deployment-k8s/`) as in your [deployment method](#deploy).
+For source chart deployments, use `deployment-k8s/` instead of the `.tgz` file (see [Deploy](#deploy)).
 
 ## FRAG Integration
 
@@ -201,7 +199,10 @@ To use the Foundational RAG (FRAG) config, you need a running NVIDIA RAG Bluepri
 If the RAG Blueprint is deployed in the same Kubernetes cluster, use internal service DNS:
 
 ```bash
-helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+  --wait --timeout 10m \
+  --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
+  --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml \
   --set aiq.apps.backend.env.RAG_SERVER_URL=http://rag-server.<rag-namespace>.svc.cluster.local:8081/v1 \
   --set aiq.apps.backend.env.RAG_INGEST_URL=http://ingestor-server.<rag-namespace>.svc.cluster.local:8082/v1
@@ -214,7 +215,10 @@ Replace `<rag-namespace>` with the namespace where the RAG Blueprint is deployed
 If the RAG service is running outside the cluster:
 
 ```bash
-helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+  --wait --timeout 10m \
+  --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
+  --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
   --set aiq.apps.backend.env.CONFIG_FILE=configs/config_web_frag.yml \
   --set aiq.apps.backend.env.RAG_SERVER_URL=http://<rag-host>:8081/v1 \
   --set aiq.apps.backend.env.RAG_INGEST_URL=http://<rag-ingest-host>:8082/v1
@@ -236,7 +240,9 @@ aiq:
 ```
 
 ```bash
-helm upgrade --install aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq -f aiq-frag-values.yaml
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+  --wait --timeout 10m \
+  -f aiq-frag-values.yaml
 ```
 
 For complete examples with NGC-specific flags, see `deploy/helm/README.md` in the source repository.
@@ -277,10 +283,10 @@ kubectl rollout restart deployment -n ns-aiq aiq-backend aiq-frontend
 
 ## Upgrade
 
-For NGC Helm chart releases:
+For NGC Helm chart releases, fetch the new chart archive (same NGC URL pattern with the new version) if needed, then run:
 
 ```bash
-helm upgrade aiq oci://nvcr.io/nvidia/blueprint/aiq2-web --version 2.0.0 -n ns-aiq \
+helm upgrade aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'

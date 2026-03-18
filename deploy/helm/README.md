@@ -37,25 +37,15 @@ deploy/helm/
 
 ## Install from NGC Helm Repository
 
-### 1. Add the NGC Helm repository
+This section installs the pre-built chart **aiq2-web** version **2.0.0** from the NGC Helm repository (`https://helm.ngc.nvidia.com/nvidia/blueprint/charts/`).
 
-```bash
-helm repo add <ngc-helm-repo> https://helm.ngc.nvidia.com/<ngc-org>/<ngc-team> \
-  --username='$oauthtoken' \
-  --password=$NGC_API_KEY
-
-helm repo update <ngc-helm-repo>
-```
-
-Replace `<ngc-helm-repo>` with a local name for the repository, and `<ngc-org>/<ngc-team>` with the NGC organization and team provided to you.
-
-### 2. Create the namespace
+### 1. Create the namespace
 
 ```bash
 kubectl create namespace ns-aiq --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-### 3. Create secrets
+### 2. Create secrets
 
 API credentials for the application:
 
@@ -76,38 +66,47 @@ kubectl create secret docker-registry ngc-secret -n ns-aiq \
   --docker-password=$NGC_API_KEY
 ```
 
-### 4. Install the chart
+### 3. Fetch the chart and install
 
-**Option A — Fetch then install:**
-
-Download the chart archive first, then install from the local `.tgz` file:
+**Fetch, verify, then install from local file:**
 
 ```bash
-helm pull <ngc-helm-repo>/<chart-name> --version <version>
+helm fetch https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
+  --username='$oauthtoken' \
+  --password=<YOUR_NGC_API_KEY>
 
-helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
+# Verify the chart was fetched correctly
+helm show chart aiq2-web-2.0.0.tgz
+
+# Install from the local file
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq --create-namespace \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
 
-**Option B — Install directly from the repository:**
+- Replace `<YOUR_NGC_API_KEY>` with your NGC API key (or use `$NGC_API_KEY` if set in your environment).
+- On Helm 3.11+, you can use `helm pull` instead of `helm fetch`.
+- To avoid exposing the key in shell history, use a variable: `--password=$NGC_API_KEY`.
+
+**Optional — Install directly from the chart URL** (without fetching first):
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq https://helm.ngc.nvidia.com/nvidia/blueprint/charts/aiq2-web-2.0.0.tgz \
+  --username='$oauthtoken' \
+  --password=$NGC_API_KEY \
+  -n ns-aiq --create-namespace \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
 ```
-
-Replace `<chart-name>` and `<version>` with the values provided to you (for example, `aiq2-web` and `2.0.0`).
 
 ### Override values
 
 Pass additional `--set` flags to customize the deployment:
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
@@ -117,21 +116,17 @@ helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n n
 Or supply a custom values file:
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   -f custom-values.yaml
 ```
 
 ### Inspect default values
 
-To see what values a chart supports before installing:
+To see what values the chart supports before installing:
 
 ```bash
-# From the repository
-helm show values <ngc-helm-repo>/<chart-name> --version <version>
-
-# From a local .tgz file
-helm show values <chart-name>-<version>.tgz
+helm show values aiq2-web-2.0.0.tgz
 ```
 
 ### Verify
@@ -172,12 +167,10 @@ Open [http://localhost:3000](http://localhost:3000) to access the web UI.
 
 ### Upgrade
 
-To upgrade an existing release to a newer chart version:
+To upgrade an existing release to a newer chart version, fetch the new chart archive (same NGC URL pattern with the new version, e.g. `aiq2-web-2.0.1.tgz`) or use the new chart URL for direct install, then run:
 
 ```bash
-helm repo update <ngc-helm-repo>
-
-helm upgrade aiq <ngc-helm-repo>/<chart-name> --version <new-version> -n ns-aiq \
+helm upgrade aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret'
@@ -202,7 +195,7 @@ The backend loads a workflow config at startup. Switch configs with `--set`:
 | `configs/config_web_frag.yml` | Foundational RAG mode (requires a running RAG service) |
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
@@ -218,7 +211,7 @@ To use the Foundational RAG (FRAG) config, you need a running NVIDIA RAG Bluepri
 If the RAG Blueprint is deployed in the same Kubernetes cluster, use internal service DNS:
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
@@ -234,7 +227,7 @@ Replace `<rag-namespace>` with the namespace where the RAG Blueprint is deployed
 If the RAG service is running outside the cluster:
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   --set 'aiq.apps.backend.imagePullSecrets[0].name=ngc-secret' \
   --set 'aiq.apps.frontend.imagePullSecrets[0].name=ngc-secret' \
@@ -259,7 +252,7 @@ aiq:
 ```
 
 ```bash
-helm upgrade --install aiq <ngc-helm-repo>/<chart-name> --version <version> -n ns-aiq \
+helm upgrade --install aiq aiq2-web-2.0.0.tgz -n ns-aiq \
   --wait --timeout 10m \
   -f aiq-frag-values.yaml
 ```
