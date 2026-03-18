@@ -1,7 +1,31 @@
 # Change Log
 
 Release v2.0.0
-- To be Added
+
+Ground-up rewrite of the NVIDIA AI-Q Blueprint, built on the NVIDIA NeMo Agent Toolkit (NAT).
+
+- Two-tier research architecture with automatic routing between shallow (fast, bounded) and deep (multi-phase, report-grade) research via a single-call Intent Classifier
+- Deep Researcher rebuilt with a three-role subagent architecture (Orchestrator, Planner, Researcher) using the `deepagents` library, with configurable research loops and per-role LLM assignment
+- New Shallow Researcher agent with tool-call budgets, context compaction, and synthesis anchors for citation-backed answers
+- Clarifier agent with human-in-the-loop plan generation, approval, and feedback before deep research
+- Shallow-to-deep escalation when the shallow researcher detects insufficient results
+- Async Jobs REST API (`/v1/jobs/async/`) with SSE streaming, event replay, reconnection support, and cooperative cancellation
+- Dask-based distributed execution with configurable workers, heartbeats, and stale job reaping
+- PostgreSQL persistence for job store, event store, LangGraph checkpoints, and document summaries
+- Pluggable Knowledge Layer with factory/registry pattern — swap between LlamaIndex (local ChromaDB) and Foundational RAG (hosted NVIDIA RAG Blueprint) without code changes
+- Multimodal document extraction (VLM-powered image captioning and chart data extraction)
+- Document summaries injected into agent prompts for file-aware research
+- Deterministic citation verification pipeline with five-level URL matching, report sanitization, and audit trail
+- New Next.js frontend with conversational UI, document upload, collection management, and real-time progress streaming
+- Optional OAuth/OIDC authentication with configurable providers
+- Multi-backend observability: Phoenix, LangSmith, W&B Weave, and OpenTelemetry Collector with privacy redaction
+- FreshQA benchmark for shallow researcher factuality evaluation via `nat eval`
+- Docker Compose and Helm chart deployments with distroless runtime images, non-root execution, and horizontal scaling
+- Native NAT integration — all configuration through YAML with `nat run` / `nat serve` / `nat eval`
+- Four pre-built configs: CLI default, Web + LlamaIndex, Web + Foundational RAG, Hybrid Frontier Model
+- uv workspace monorepo, Jupyter notebook tutorial series, and debug console at `/debug`
+- Pinned to NeMo Agent Toolkit (NAT) v1.4.0; Python 3.11–3.13; Node.js 22+
+- AI-Q holds top positions on both DeepResearch Bench and DeepResearch Bench II leaderboards (see `drb1` and `drb2` branches)
 
 Release v1.2.1
 - Upgraded llama-3.3-70b-instruct NIM from version 1.13.1 to 1.14.0
