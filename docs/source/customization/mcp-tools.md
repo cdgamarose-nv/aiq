@@ -13,7 +13,7 @@ For the full MCP documentation, refer to the [NeMo Agent Toolkit MCP Client Guid
 Install MCP support if it is not already available:
 
 ```bash
-uv pip install nvidia-nat-mcp==1.4.0
+uv pip install nvidia-nat-mcp==1.5.0
 ```
 
 ## Starting an Example MCP Server

@@ -16,7 +16,7 @@
 """Shared authentication utilities for token retrieval and user info.
 
 These utilities can be used by any tool or agent to get auth tokens or user info.
-Token source: AIQContext cookies (idToken) - set by the frontend auth layer.
+Token source: Context cookies (idToken) - set by the frontend auth layer.
 """
 
 import base64
@@ -73,19 +73,19 @@ def get_auth_token() -> str | None:
     Returns:
         ID token string or None if not available.
     """
-    from nat.builder.context import AIQContext
+    from nat.builder.context import Context
 
     try:
-        context_metadata = AIQContext.get().metadata
+        context_metadata = Context.get().metadata
 
         if context_metadata and context_metadata.cookies:
             id_token = context_metadata.cookies.get("idToken")
             if id_token:
                 token = id_token.strip()
-                logger.debug("Using token from AIQContext cookies")
+                logger.debug("Using token from Context cookies")
                 return token
     except Exception as e:
-        logger.debug("Failed to retrieve token from AIQContext: %s", e)
+        logger.debug("Failed to retrieve token from Context: %s", e)
 
     return None
 
@@ -94,7 +94,7 @@ def get_current_user_info() -> UserInfo | None:
     """
     Get current user information from the frontend auth token.
 
-    Reads the idToken cookie from AIQContext (set by the frontend).
+    Reads the idToken cookie from Context (set by the frontend).
 
     Returns:
         UserInfo object or None if no token available.

@@ -391,7 +391,7 @@ class TestSubmitDeepResearchJob:
                 "NAT_CONFIG_PATH": "/path/to/config.yml",
             },
         ):
-            with patch("nat.front_ends.fastapi.job_store.JobStore", return_value=mock_job_store):
+            with patch("nat.front_ends.fastapi.async_jobs.job_store.JobStore", return_value=mock_job_store):
                 result = await submit_deep_research_job(
                     input_text="test query",
                     owner="test@example.com",
@@ -416,7 +416,7 @@ class TestSubmitDeepResearchJob:
                 "NAT_JOB_STORE_DB_URL": "sqlite:///./test.db",
             },
         ):
-            with patch("nat.front_ends.fastapi.job_store.JobStore", return_value=mock_job_store):
+            with patch("nat.front_ends.fastapi.async_jobs.job_store.JobStore", return_value=mock_job_store):
                 result = await submit_agent_job(
                     agent_type="deep_researcher",
                     input_text="test query",
@@ -444,7 +444,7 @@ class TestSubmitDeepResearchJob:
                 "NAT_DASK_SCHEDULER_ADDRESS": "tcp://localhost:8786",
             },
         ):
-            with patch("nat.front_ends.fastapi.job_store.JobStore", return_value=mock_job_store):
+            with patch("nat.front_ends.fastapi.async_jobs.job_store.JobStore", return_value=mock_job_store):
                 result = await submit_deep_research_job(
                     input_text="test query",
                     owner="test@example.com",

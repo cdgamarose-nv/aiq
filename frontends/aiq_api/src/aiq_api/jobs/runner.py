@@ -85,8 +85,8 @@ class CancellationMonitor:
 
     async def _poll_job_status(self) -> None:
         """Poll job status and set cancelled event if interrupted."""
-        from nat.front_ends.fastapi.job_store import JobStatus
-        from nat.front_ends.fastapi.job_store import JobStore
+        from nat.front_ends.fastapi.async_jobs.job_store import JobStatus
+        from nat.front_ends.fastapi.async_jobs.job_store import JobStore
 
         job_store = JobStore(scheduler_address=self.scheduler_address, db_url=self.db_url)
 
@@ -242,8 +242,8 @@ async def run_agent_job(
     from aiq_agent.common import is_verbose
     from nat.builder.framework_enum import LLMFrameworkEnum
     from nat.builder.workflow_builder import WorkflowBuilder
-    from nat.front_ends.fastapi.job_store import JobStatus
-    from nat.front_ends.fastapi.job_store import JobStore
+    from nat.front_ends.fastapi.async_jobs.job_store import JobStatus
+    from nat.front_ends.fastapi.async_jobs.job_store import JobStore
     from nat.runtime.loader import load_config
 
     if configure_logging:
@@ -315,7 +315,7 @@ async def run_agent_job(
             from nat.data_models.intermediate_step import TraceMetadata
             from nat.data_models.invocation_node import InvocationNode
             from nat.observability.exporter_manager import ExporterManager
-            from nat.profiler.callbacks.langchain_callback_handler import LangchainProfilerHandler
+            from nat.plugins.langchain.callback_handler import LangchainProfilerHandler
             from nat.utils.reactive.subject import Subject
 
             telemetry_exporters = {
