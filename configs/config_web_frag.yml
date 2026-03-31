@@ -13,7 +13,7 @@ general:
         _type: console
         level: INFO
     # tracing:
-    #   langsmith: # Optional: LangSmith tracing - requires langsmith API key. Set using `export LANGSMITH_API_KEY=<your-langsmith-apikey>`
+    #   langsmith: # Optional: LangSmith tracing - requires langsmith API key. Set using `export LANGSMITH_API_KEY=<your-langsmith-api-key>`
     #     _type: langsmith
     #     project: nvidia-aiq
 
