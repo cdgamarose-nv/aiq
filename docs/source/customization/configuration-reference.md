@@ -510,7 +510,7 @@ functions:
 | `enable_source_router` | `bool` | `true` | Run the advisory source-router sub-agent before planning. It recommends available mapped sources but does not restrict worker tool bindings. |
 | `enable_citation_verification` | `bool` | `true` | Verify final citations against sources captured from configured tool results. Set `false` only when the active source formats are not compatible with verification. |
 | `skills` | object or function ref | `None` | Inline `deep_research_skills` config or a reference to a config-only function of that type. Skill assignments are keyed by `researcher-agent` and `writer-agent`. |
-| `sandbox` | object or function ref | `None` | Inline `deep_research_sandbox` config or a reference to a config-only function of that type. Enables the DeepAgents execution backend. |
+| `sandbox` | object or function ref | `None` | Inline `deep_research_sandbox` config or a reference to a config-only function of that type. Deep Research uses its DeepAgents backend; Hybrid Research can reuse the lower-level sandbox provider directly. |
 | `max_research_concurrency` | `int` | `6` | Maximum `ResearchQuery` objects accepted and run concurrently by one `run_research_batch` call. |
 | `max_concurrent_source_tool_calls` | `int` | `5` | Shared cap on concurrent source-tool calls across all researcher workers in the run. |
 | `max_source_tool_batch_size` | `int` | `4` | Maximum concrete inputs accepted by a batch-capable source-tool wrapper in one call. |
@@ -556,6 +556,87 @@ enabled only in the skills and sandbox example configs (`config_domain_routing_a
 A writer that wants inline charts must be assigned the `visualization` collection in its
 `deep_research_skills` assignment.
 ```
+
+### `hybrid_research_agent`
+
+Hybrid Research combines conventional research with coarse structured-analysis
+tasks. A deterministic dependency scheduler executes the append-only task
+ledger; the planner model runs initially and only after the current ledger is
+exhausted.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `clarifier_llm` | `str` | `None` | LLM used to identify ambiguous business meaning. Required when `enable_clarifier` is `true`. |
+| `planner_llm` | `str` | **required** | LLM used for initial coarse planning and append-only continuation decisions. |
+| `writer_llm` | `str` | **required** | LLM used for final cross-synthesis. |
+| `research_worker` | `str` | **required** | Registered `hybrid_research_worker` function used by research tasks. |
+| `structured_analysis_worker` | `str` | **required** | Registered headless worker used by structured-analysis tasks. |
+| `database_name` | `str` | `None` | Optional GSF database scope. |
+| `enable_clarifier` | `bool` | `true` | Clarify material ambiguity before planning when interaction is available. Set `false` in benchmark profiles to use the original question directly. |
+| `max_clarification_turns` | `int` | `3` | Maximum user replies before an unresolved interactive request fails closed. |
+| `max_parallel_tasks` | `int` | `4` | Global cap for dependency-ready tasks dispatched concurrently. |
+| `max_total_tasks` | `int` | `12` | Maximum tasks across the initial plan and all append waves. |
+| `max_plan_extensions` | `int` | `2` | Maximum append waves; terminal continuation decisions are still allowed afterward. |
+| `llm_timeout` | `float` | `90` | Total timeout for one structured clarification decision. |
+| `planner_timeout_seconds` | `float` | `90` | Total timeout for the initial coarse-planning call, including one format correction. |
+| `continuation_timeout_seconds` | `float` | `90` | Total timeout for one exhausted-ledger continuation decision. |
+| `writer_timeout_seconds` | `float` | `120` | Total timeout for final synthesis. |
+| `writer_max_input_chars` | `int` | `200000` | Final safety ceiling for bounded writer context. Complete structured payloads are retained outside the prompt rather than silently truncated. |
+| `enable_citation_verification` | `bool` | `true` | Verify final source identities using the request-scoped registry and retained GSF citation keys. |
+| `checkpoint_db` | `str` | `./checkpoints.db` | SQLite path or PostgreSQL DSN for Hybrid child checkpoints. |
+| `verbose` | `bool` | `false` | Log plan shape, ready batches, task status, and model callbacks without logging questions or result payloads. |
+
+Disabling the clarifier makes no clarifier-model or NAT user-input call.
+This differs from a request whose `skip_clarifier` state is true: that request
+is still assessed, but an ambiguous question returns
+`clarification_required` instead of prompting.
+When the user exactly confirms explicitly proposed defaults, Hybrid records
+the confirmation and proceeds directly to planning without another clarifier
+model call. A reply containing a correction is reassessed normally.
+
+### `hybrid_research_worker`
+
+The Hybrid research worker executes one focused, unstructured research query
+and returns the complete `ResearchNotes` contract. It never invokes the Deep
+Research planner, batch scheduler, or writer, and GSF tools are always excluded.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `researcher_llm` | `str` | **required** | LLM used for the structured research notes. |
+| `tools` | `list[str]` | `[]` | Explicit source tools. Empty inherits the data-source registry. |
+| `exclude_tools` | `list[str]` | GSF catalog and SQL tools | Additional tools excluded from the worker. |
+| `max_source_tool_calls` | `int` | `6` | Maximum concrete source-tool calls made by one research node. |
+| `max_concurrent_source_tool_calls` | `int` | `2` | Maximum source-tool calls executed concurrently within one research node. |
+| `max_source_tool_batch_size` | `int` | `2` | Maximum concrete queries accepted by one batch-capable source-tool call. |
+| `timeout_seconds` | `float` | `180` | Total wall-clock deadline for one research node. |
+| `verbose` | `bool` | `false` | Enable verbose worker callback tracing. |
+
+### `structured_analysis_worker`
+
+The structured-analysis worker is invoked once per coarse enterprise task. It
+retains every GSF response/error in attempt order only while the worker is
+active and may use sandboxed pandas over its complete worker-local response
+manifest. It does not expose catalog search, public
+research, user interaction, or final-answer writing. Its final answer-ready
+evidence capsule is limited to 8,000 characters; model-facing downstream
+contexts receive that capsule and bounded provenance instead of raw rows or
+Python code/output.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `structured_analysis_llm` | `str` | **required** | LLM used for the bounded observation-driven trajectory. |
+| `sql_tool` | `str` | **required** | Registered `gsf__text_to_sql` function. |
+| `sandbox` | object or function ref | **required** | Inline or referenced `deep_research_sandbox`; networking must be blocked and Modal images must include pandas. |
+| `database_name` | `str` | `None` | Optional configured GSF database scope. |
+| `sql_max_rows` | `int` | `1000` | Maximum rows requested per GSF call. |
+| `structured_max_gsf_calls` | `int` | `4` | Hard maximum GSF calls in one task. |
+| `structured_max_python_calls` | `int` | `4` | Hard maximum sandboxed Python calls in one task. |
+| `structured_analysis_timeout_seconds` | `float` | `600` | Total task deadline. |
+| `python_execute_timeout_seconds` | `int` | `60` | Maximum duration of one Python execution. |
+| `max_code_chars` | `int` | `40000` | Maximum generated Python size per call. |
+| `max_output_chars` | `int` | `40000` | Maximum Python output projected back to the model. |
+| `model_result_rows` | `int` | `25` | Maximum GSF rows projected to the model; complete responses remain worker-local until sandbox cleanup. |
+| `verbose` | `bool` | `false` | Enable worker callback tracing. |
 
 ---
 

@@ -15,6 +15,7 @@
 
 """Tests for citation verification module."""
 
+import json
 import logging
 
 import pytest
@@ -227,6 +228,10 @@ class TestSourceRegistry:
     def test_has_citation_key_different_file_no_match(self, registry):
         registry.add(SourceEntry(citation_key="report.pdf, p.15"))
         assert not registry.has_citation_key("other.pdf, p.15")
+
+    def test_resolve_citation_key_returns_registered_format(self, registry):
+        registry.add(SourceEntry(citation_key="Report.PDF, p.15"))
+        assert registry.resolve_citation_key("report.pdf, page 3") == "Report.PDF, p.15"
 
     def test_all_sources(self, registry):
         e1 = SourceEntry(url="https://a.com")
@@ -660,6 +665,39 @@ class TestParserDispatcher:
         entries = extract_sources_from_tool_result("future_tool", "See https://example.com for details")
         assert len(entries) == 1
         assert entries[0].url == "https://example.com"
+
+    def test_gsf_text_to_sql_uses_result_citation_key(self):
+        content = json.dumps(
+            {
+                "request_id": "gsf-request-1",
+                "sql": "SELECT revenue FROM quarterly_results",
+                "rows": [{"revenue": 100}],
+                "citation_key": "GSF request gsf-request-1",
+            }
+        )
+
+        entries = extract_sources_from_tool_result("gsf__text_to_sql", content, source_id="gsf")
+
+        assert entries == [
+            SourceEntry(
+                citation_key="GSF request gsf-request-1",
+                title="GSF structured data query",
+                source_type="gsf",
+                tool_name="gsf__text_to_sql",
+            )
+        ]
+
+    def test_gsf_text_to_sql_error_is_not_citable(self):
+        content = json.dumps(
+            {
+                "status": "error",
+                "code": "rate_limited",
+                "retryable": True,
+                "message": "GSF rate limit was reached.",
+            }
+        )
+
+        assert extract_sources_from_tool_result("gsf__text_to_sql", content, source_id="gsf") == []
 
     def test_custom_parser_takes_priority(self):
         """Registered parsers take priority over generic fallback."""

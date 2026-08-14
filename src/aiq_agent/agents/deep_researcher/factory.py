@@ -231,8 +231,27 @@ def build_common_middleware(
     extra_valid_tool_names: Sequence[str] = (),
 ) -> list[Any]:
     """Build the shared middleware stack with agent-specific valid tool names."""
-    valid_tool_names = {tool.name for tool in [*tool_set.all_tools, *tool_set.researcher_tools]}
-    valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
+    return build_common_middleware_for_tools(
+        tools=[*tool_set.all_tools, *tool_set.researcher_tools],
+        source_registry_middleware=source_registry_middleware,
+        artifact_manager=artifact_manager,
+        extra_valid_tool_names=extra_valid_tool_names,
+        include_filesystem_tool_names=True,
+    )
+
+
+def build_common_middleware_for_tools(
+    *,
+    tools: Sequence[BaseTool],
+    source_registry_middleware: SourceRegistryMiddleware,
+    artifact_manager: object | None = None,
+    extra_valid_tool_names: Sequence[str] = (),
+    include_filesystem_tool_names: bool = False,
+) -> list[Any]:
+    """Build the common reliability and source-capture stack for a concrete tool set."""
+    valid_tool_names = {tool.name for tool in tools}
+    if include_filesystem_tool_names:
+        valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
     valid_tool_names.update(extra_valid_tool_names)
     middleware: list[Any] = [
         EmptyContentFixMiddleware(),
@@ -378,14 +397,18 @@ def build_researcher_runnable(
     backend: Any = None,
     visibility_middleware: list[Any] | None = None,
     filesystem_permissions: list[FilesystemPermission] | None = None,
+    include_filesystem_tools: bool = True,
 ) -> Any:
     """Build the reusable single-query researcher runnable."""
     middleware: list[Any] = []
     if skill_sources:
+        if not include_filesystem_tools:
+            raise ValueError("skill_sources require filesystem tools")
         middleware.append(SkillsMiddleware(backend=backend, sources=skill_sources))
+    if include_filesystem_tools:
+        middleware.append(FilesystemMiddleware(backend=backend, _permissions=filesystem_permissions))
     middleware.extend(
         [
-            FilesystemMiddleware(backend=backend, _permissions=filesystem_permissions),
             create_summarization_middleware(researcher_model, backend),
             PatchToolCallsMiddleware(),
             StructuredResponseTextFallbackMiddleware(ResearchNotes),

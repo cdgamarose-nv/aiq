@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 
 from aiq_agent.agents.chat_researcher.models import RESEARCH_WORKFLOW_FAILURE_ERROR
+from aiq_agent.agents.chat_researcher.models import WorkflowClarificationRequired
 from aiq_agent.agents.chat_researcher.models import WorkflowFailure
 from aiq_agent.agents.chat_researcher.models import WorkflowSuccess
 from aiq_agent.agents.chat_researcher.utils import _extract_query_and_sources
@@ -66,6 +67,24 @@ class TestWorkflowResponse:
 
         assert response.workflow_outcome == failure
         assert response.choices[0].message.content == "Please try again."
+
+    def test_clarification_required_preserves_typed_terminal_outcome(self):
+        from aiq_agent.agents.chat_researcher.register import _render_workflow_response
+
+        required = WorkflowClarificationRequired(
+            clarification_question="Which reporting period should I use?",
+            missing_dimensions=("time_window",),
+        )
+        response = _render_workflow_response(
+            {
+                "messages": [AIMessage(content=required.clarification_question)],
+                "workflow_outcome": required.model_dump(),
+            },
+            model="workflow",
+        )
+
+        assert response.workflow_outcome == required
+        assert response.choices[0].message.content == required.clarification_question
 
 
 class TestReportFollowUpHelpers:

@@ -95,6 +95,7 @@ def text_to_sql_response() -> dict:
 
     return {
         "request_id": "gsf-request-1",
+        "response": "Revenue was returned for two quarters.",
         "thoughts": "- Constructing SQL: Used quarterly_results.",
         "sql": "SELECT revenue FROM quarterly_results",
         "columns": [{"name": "revenue", "data_type": "numeric"}],

@@ -3,6 +3,7 @@
 
 """Typed, NAT-independent contracts for GSF capabilities."""
 
+import hashlib
 from typing import Annotated
 from typing import Any
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import StringConstraints
+from pydantic import computed_field
 
 DatabaseName = Annotated[
     str,
@@ -103,6 +105,7 @@ class TextToSQLResponse(GSFResponse):
     """Validated SQL, bounded rows, and semantic provenance returned by GSF."""
 
     request_id: str | None = None
+    response: str | None = None
     thoughts: str | None = None
     sql: str
     columns: list[ResultColumn] = Field(default_factory=list)
@@ -116,6 +119,24 @@ class TextToSQLResponse(GSFResponse):
     assumptions: list[str] | None = None
     warnings: list[str] | None = None
     timings: dict[str, int | float] | None = None
+
+    @computed_field
+    @property
+    def returned_row_count(self) -> int:
+        """Return the number of bounded rows present in this tool result."""
+
+        return len(self.rows)
+
+    @computed_field
+    @property
+    def citation_key(self) -> str:
+        """Return a stable, request-specific identity for citation capture."""
+
+        identifier = self.request_id
+        if not identifier:
+            sql_digest = hashlib.sha256(self.sql.encode("utf-8")).hexdigest()[:16]
+            identifier = f"sql-{sql_digest}"
+        return f"GSF request {identifier}"
 
 
 class TextToPQLResponse(GSFResponse):

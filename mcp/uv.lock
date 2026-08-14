@@ -175,6 +175,7 @@ source = { editable = "../" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
+    { name = "aiq-gsf" },
     { name = "asyncpg" },
     { name = "deepagents" },
     { name = "knowledge-layer", extra = ["all"] },
@@ -199,6 +200,7 @@ dependencies = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=23.0.0" },
     { name = "aiosqlite", specifier = ">=0.19.0" },
+    { name = "aiq-gsf", editable = "../sources/gsf" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35.0,<2" },
     { name = "deepagents", specifier = ">=0.6.5" },
@@ -264,6 +266,23 @@ dev = [
     { name = "tavily-web-search", editable = "../sources/tavily_web_search" },
     { name = "yapf", specifier = ">=0.40.0" },
     { name = "you-com", editable = "../sources/you_com" },
+]
+
+[[package]]
+name = "aiq-gsf"
+version = "0.1.0"
+source = { editable = "../sources/gsf" }
+dependencies = [
+    { name = "httpx" },
+    { name = "nvidia-nat-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0,<1" },
+    { name = "nvidia-nat-core", specifier = "==1.8.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
 ]
 
 [[package]]

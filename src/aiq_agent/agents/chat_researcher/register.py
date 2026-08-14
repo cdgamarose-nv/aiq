@@ -24,6 +24,7 @@ import aiofiles
 from langchain_core.messages import HumanMessage
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import TypeAdapter
 
 from aiq_agent.common import VerboseTraceCallback
 from aiq_agent.common import _create_chat_response
@@ -52,6 +53,7 @@ from .models import RESEARCH_WORKFLOW_FAILURE_ERROR
 from .models import ChatResearcherResponse
 from .models import ChatResearcherState
 from .models import WorkflowFailure
+from .models import WorkflowOutcome
 from .models import WorkflowSuccess
 from .utils import _extract_database_name_from_request_metadata
 from .utils import _extract_query_context
@@ -61,6 +63,7 @@ logger = logging.getLogger(__name__)
 # Upper bound on the single bounded report-ask LLM call so a stalled provider
 # degrades to a graceful message instead of blocking the whole chat turn.
 _REPORT_ASK_TIMEOUT_S = 120
+_WORKFLOW_OUTCOME_ADAPTER = TypeAdapter(WorkflowOutcome)
 
 _ensure_otel_redaction_registered()
 
@@ -93,9 +96,11 @@ def _render_workflow_response(
     if not isinstance(response_content, str):
         response_content = str(response_content)
 
-    if isinstance(raw_outcome, dict) and raw_outcome.get("status") == "failed":
-        raw_outcome = WorkflowFailure.model_validate(raw_outcome)
-    outcome = raw_outcome if isinstance(raw_outcome, WorkflowFailure) else WorkflowSuccess(result=response_content)
+    outcome = (
+        WorkflowSuccess(result=response_content)
+        if raw_outcome is None
+        else _WORKFLOW_OUTCOME_ADAPTER.validate_python(raw_outcome)
+    )
     response = _create_chat_response(response_content, response_id=response_id, model=model)
     return ChatResearcherResponse(**response.model_dump(), workflow_outcome=outcome)
 

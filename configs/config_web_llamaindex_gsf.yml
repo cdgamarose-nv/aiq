@@ -1,0 +1,229 @@
+# Web API and LlamaIndex profile for GSF context-aware routing.
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+    tracing:
+      phoenix:
+        _type: phoenix
+        endpoint: http://localhost:6006/v1/traces
+        project: gsf-routing-debug
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  nemotron_ultra_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3-ultra-550b-a55b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 16384
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: false
+
+  nemotron_ultra_writer_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3-ultra-550b-a55b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 32768
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: false
+
+  summary_llm:
+    _type: nim
+    model_name: nvidia/nemotron-mini-4b-instruct
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.3
+    max_tokens: 100
+
+function_groups:
+  gsf:
+    _type: gsf
+    base_url: ${GSF_BASE_URL}
+    auth:
+      mode: password
+      email: ${GSF_EMAIL}
+      password: GSF_PASSWORD  # pragma: allowlist secret
+    connect_timeout_seconds: 300
+    read_timeout_seconds: 300
+    include:
+      - catalog_search
+      - text_to_sql
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+      - id: gsf
+        name: Enterprise Structured Data
+        description: Query authorized enterprise structured data through GSF.
+        tools:
+          - gsf
+        default_enabled: true
+        requires_auth: false
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: llamaindex
+    collection_name: ${COLLECTION_NAME:-test_collection}
+    generate_summary: true
+    summary_model: summary_llm
+    summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./summaries.db}
+    top_k: 5
+    chroma_dir: ${AIQ_CHROMA_DIR:-/tmp/chroma_data}
+
+  intent_classifier:
+    _type: context_aware_intent_router
+    llm: nemotron_ultra_llm
+    catalog_tool: gsf__catalog_search
+    catalog_source_id: gsf
+    max_catalog_results: 10
+    catalog_max_distance: 0.75
+    catalog_confidence_threshold: 0.6
+    verbose: true
+
+  hybrid_research_worker:
+    _type: hybrid_research_worker
+    researcher_llm: nemotron_ultra_llm
+    tools:
+      - web_search_tool
+      - advanced_web_search_tool
+      - knowledge_search
+    exclude_tools:
+      - gsf__catalog_search
+      - gsf__text_to_sql
+    max_source_tool_calls: 6
+    max_concurrent_source_tool_calls: 2
+    max_source_tool_batch_size: 2
+    timeout_seconds: 180
+    verbose: true
+
+  hybrid_analysis_sandbox:
+    _type: deep_research_sandbox
+    provider: modal
+    app_name: aiq-hybrid-research
+    image: python:3.13-slim
+    packages:
+      - numpy
+      - pandas
+    network: blocked
+
+  structured_analysis_worker:
+    _type: structured_analysis_worker
+    structured_analysis_llm: nemotron_ultra_llm
+    sql_tool: gsf__text_to_sql
+    sandbox: hybrid_analysis_sandbox
+    sql_max_rows: 1000
+    structured_max_gsf_calls: 4
+    structured_max_python_calls: 4
+    structured_analysis_timeout_seconds: 600
+    python_execute_timeout_seconds: 60
+    verbose: true
+
+  hybrid_research_agent:
+    _type: hybrid_research_agent
+    clarifier_llm: nemotron_ultra_llm
+    planner_llm: nemotron_ultra_llm
+    writer_llm: nemotron_ultra_writer_llm
+    research_worker: hybrid_research_worker
+    structured_analysis_worker: structured_analysis_worker
+    enable_clarifier: true
+    max_clarification_turns: 3
+    max_parallel_tasks: 4
+    max_total_tasks: 12
+    max_plan_extensions: 2
+    continuation_timeout_seconds: 90
+    checkpoint_db: ${AIQ_CHECKPOINT_DB:-./checkpoints.db}
+    verbose: true
+
+  clarifier_agent:
+    _type: clarifier_agent
+    llm: nemotron_ultra_llm
+    max_turns: 3
+    log_response_max_chars: 2000
+    exclude_tools:
+      - gsf__catalog_search
+      - gsf__text_to_sql
+    verbose: true
+
+  shallow_research_agent:
+    _type: shallow_research_agent
+    llm: nemotron_ultra_llm
+    exclude_tools:
+      - advanced_web_search_tool
+      - gsf__catalog_search
+      - gsf__text_to_sql
+    verbose: true
+    max_llm_turns: 10
+    max_tool_iterations: 5
+
+  deep_research_agent:
+    _type: deep_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: nemotron_ultra_llm
+    source_router_llm: nemotron_ultra_llm
+    researcher_llm: nemotron_ultra_llm
+    planner_llm: nemotron_ultra_llm
+    writer_llm: nemotron_ultra_writer_llm
+    exclude_tools:
+      - web_search_tool
+      - gsf__catalog_search
+      - gsf__text_to_sql
+    verbose: true
+
+workflow:
+  _type: chat_deepresearcher_agent
+  hybrid_research_agent: hybrid_research_agent
+  verbose: true
+  enable_escalation: true
+  enable_clarifier: true
+  use_async_deep_research: true
+  checkpoint_db: ${AIQ_CHECKPOINT_DB:-./checkpoints.db}

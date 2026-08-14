@@ -85,25 +85,34 @@ async def _run_research_query(
 ) -> ResearchNotes:
     """Run one researcher worker and return its structured notes."""
     async with semaphore:
-        try:
-            result = await researcher_runnable.ainvoke(
-                researcher_invoke_state(query, runtime),
-                config=researcher_invoke_config(runtime, callbacks),
-            )
-        except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-            raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
+        return await invoke_researcher_runnable(
+            researcher_runnable=researcher_runnable,
+            invoke_state=researcher_invoke_state(query, runtime),
+            invoke_config=researcher_invoke_config(runtime, callbacks),
+            query_label=query.query,
+        )
 
-        try:
-            structured = result.get("structured_response") if isinstance(result, dict) else None
-            if structured is None:
-                raise ValueError("researcher worker did not return structured ResearchNotes")
-            note = ResearchNotes.model_validate(structured)
-        except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-            raise ValueError(
-                f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
-            ) from exc
 
-        return note
+async def invoke_researcher_runnable(
+    *,
+    researcher_runnable: Any,
+    invoke_state: dict[str, Any],
+    invoke_config: dict[str, Any] | None,
+    query_label: str,
+) -> ResearchNotes:
+    """Invoke one researcher and enforce the shared ``ResearchNotes`` contract."""
+    try:
+        result = await researcher_runnable.ainvoke(invoke_state, config=invoke_config)
+    except Exception as exc:  # noqa: BLE001 - caller decides how to represent the typed failure
+        raise RuntimeError(f"researcher worker failed for query {query_label!r}: {exc}") from exc
+
+    try:
+        structured = result.get("structured_response") if isinstance(result, dict) else None
+        if structured is None:
+            raise ValueError("researcher worker did not return structured ResearchNotes")
+        return ResearchNotes.model_validate(structured)
+    except Exception as exc:  # noqa: BLE001 - caller decides how to represent the typed failure
+        raise ValueError(f"researcher worker returned invalid ResearchNotes for query {query_label!r}: {exc}") from exc
 
 
 def _research_note_slug(text: str) -> str:

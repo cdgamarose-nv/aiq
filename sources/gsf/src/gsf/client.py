@@ -45,8 +45,8 @@ class GSFClient:
         self,
         *,
         base_url: str,
-        connect_timeout_seconds: float = 5.0,
-        read_timeout_seconds: float = 60.0,
+        connect_timeout_seconds: float = 300.0,
+        read_timeout_seconds: float = 300.0,
         max_retries: int = 2,
         max_response_bytes: int = 5_000_000,
         default_max_rows: int = 1_000,
@@ -517,6 +517,7 @@ class GSFClient:
         try:
             return TextToSQLResponse(
                 request_id=answer.get("request_id") or request_id,
+                response=answer.get("response"),
                 thoughts=answer.get("thoughts"),
                 sql=sql,
                 columns=columns,

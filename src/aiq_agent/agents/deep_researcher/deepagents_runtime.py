@@ -565,7 +565,7 @@ def _validate_sandbox_requirements(
         )
 
 
-def _create_sandbox_backend(config: DeepResearchSandboxConfig, job_id: str) -> Any:
+def create_sandbox_provider(config: DeepResearchSandboxConfig, job_id: str) -> Any:
     """Resolve the AI-Q sandbox config to a provider-neutral sandbox backend.
 
     Keeps the Modal dependency pre-check (clear early error when Modal is configured but
@@ -621,6 +621,11 @@ def _create_sandbox_backend(config: DeepResearchSandboxConfig, job_id: str) -> A
         }
     )
     return registry_create(provider_config, job_id)
+
+
+def _create_sandbox_backend(config: DeepResearchSandboxConfig, job_id: str) -> Any:
+    """Backward-compatible private alias used by the DeepAgents runtime."""
+    return create_sandbox_provider(config, job_id)
 
 
 def _ensure_modal_dependencies() -> None:

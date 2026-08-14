@@ -62,6 +62,15 @@ def test_password_auth_is_optional_and_carries_only_environment_name() -> None:
     assert "password=SecretStr" not in repr(password_config)
 
 
+def test_gsf_request_timeouts_default_to_five_minutes() -> None:
+    """Allow slow catalog and analytical requests without an unbounded wait."""
+
+    config = GSFFunctionGroupConfig(base_url="https://gsf.example")
+
+    assert config.connect_timeout_seconds == 300
+    assert config.read_timeout_seconds == 300
+
+
 def test_password_auth_reads_environment_after_workflow_interpolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve the exact secret after a JSON round trip like NAT's worker boundary."""
 
@@ -237,10 +246,14 @@ async def test_text_to_sql_resolves_token_per_invocation(text_to_sql_response: d
 
     assert first["request_id"] == "gsf-request-1"
     assert second["request_id"] == "gsf-request-1"
+    assert first["response"] == "Revenue was returned for two quarters."
+    assert second["response"] == "Revenue was returned for two quarters."
     assert first["thoughts"] == "- Constructing SQL: Used quarterly_results."
     assert second["thoughts"] == "- Constructing SQL: Used quarterly_results."
-    assert "response" not in first
-    assert "response" not in second
+    assert first["returned_row_count"] == 2
+    assert second["returned_row_count"] == 2
+    assert first["citation_key"] == "GSF request gsf-request-1"
+    assert second["citation_key"] == "GSF request gsf-request-1"
     assert client.text_to_sql.await_args_list[0].kwargs["token"] == "token-one"
     assert client.text_to_sql.await_args_list[1].kwargs["token"] == "token-two"
     assert "token" not in client.__dict__

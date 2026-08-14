@@ -40,7 +40,18 @@ class WorkflowFailure(BaseModel):
     error: str
 
 
-WorkflowOutcome = Annotated[WorkflowSuccess | WorkflowFailure, Field(discriminator="status")]
+class WorkflowClarificationRequired(BaseModel):
+    """Terminal headless outcome requiring a complete clarified request."""
+
+    status: Literal["clarification_required"] = "clarification_required"
+    clarification_question: str = Field(min_length=1)
+    missing_dimensions: tuple[str, ...] = Field(min_length=1)
+
+
+WorkflowOutcome = Annotated[
+    WorkflowSuccess | WorkflowFailure | WorkflowClarificationRequired,
+    Field(discriminator="status"),
+]
 
 
 class ChatResearcherResponse(ChatResponse):

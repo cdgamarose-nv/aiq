@@ -46,8 +46,8 @@ class GSFFunctionGroupConfig(FunctionGroupBaseConfig, name="gsf"):
 
     base_url: HttpUrl
     auth: GSFPasswordAuthConfig | None = None
-    connect_timeout_seconds: float = Field(default=5.0, gt=0)
-    read_timeout_seconds: float = Field(default=60.0, gt=0)
+    connect_timeout_seconds: float = Field(default=300.0, gt=0)
+    read_timeout_seconds: float = Field(default=300.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=5)
     max_response_bytes: int = Field(default=5_000_000, ge=1)
     default_max_rows: int = Field(default=1_000, ge=1)

@@ -204,6 +204,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
+    { name = "aiq-gsf" },
     { name = "asyncpg" },
     { name = "deepagents" },
     { name = "knowledge-layer", extra = ["all"] },
@@ -287,6 +288,7 @@ dev = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=23.0.0" },
     { name = "aiosqlite", specifier = ">=0.19.0" },
+    { name = "aiq-gsf", editable = "sources/gsf" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35.0,<2" },
     { name = "deepagents", specifier = ">=0.6.5" },

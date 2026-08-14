@@ -22,6 +22,7 @@ from .intent import IntentResult
 from .result import RESEARCH_WORKFLOW_FAILURE_ERROR
 from .result import ChatResearcherResponse
 from .result import ShallowResult
+from .result import WorkflowClarificationRequired
 from .result import WorkflowFailure
 from .result import WorkflowOutcome
 from .result import WorkflowSuccess
@@ -36,6 +37,7 @@ __all__ = [
     "IntentResult",
     "RESEARCH_WORKFLOW_FAILURE_ERROR",
     "ShallowResult",
+    "WorkflowClarificationRequired",
     "WorkflowFailure",
     "WorkflowOutcome",
     "WorkflowSuccess",

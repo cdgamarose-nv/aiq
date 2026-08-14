@@ -56,6 +56,17 @@ def test_password_auth_requires_both_email_and_password(email: str | None, passw
         )
 
 
+def test_client_defaults_all_http_phases_to_five_minutes() -> None:
+    """Apply the GSF request deadline consistently to every HTTP timeout phase."""
+
+    client = GSFClient(base_url="https://gsf.example")
+
+    assert client._timeout.connect == 300
+    assert client._timeout.pool == 300
+    assert client._timeout.write == 300
+    assert client._timeout.read == 300
+
+
 @pytest.mark.asyncio
 async def test_catalog_search_uses_entity_coverage_path_maps_scope_and_bounds_candidates(
     catalog_search_api_response: dict,
@@ -155,9 +166,11 @@ async def test_text_to_sql_maps_database_to_target_db_and_bounds_rows(chat_sql_a
     }
     assert [column.name for column in result.columns] == ["revenue"]
     assert result.rows == [{"revenue": 100}]
+    assert result.returned_row_count == 1
     assert result.truncated is True
+    assert result.response == "Revenue was returned for two quarters."
     assert result.thoughts == "- Constructing SQL: Used quarterly_results."
-    assert "response" not in result.model_dump()
+    assert result.citation_key == "GSF request header-request"
 
 
 @pytest.mark.asyncio

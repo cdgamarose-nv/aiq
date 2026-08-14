@@ -69,8 +69,8 @@ class ChatResearcherState(BaseModel):
             ``catalog_context``; reset at each turn boundary.
         last_report_markdown: Most recent report produced inline, retained
             across turns for report follow-up when no report job is available.
-        workflow_outcome: Explicit terminal workflow failure when a node
-            degrades an exception to fallback text; reset at each turn boundary.
+        workflow_outcome: Explicit terminal success, failure, or required-user-
+            clarification result; reset at each turn boundary.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]

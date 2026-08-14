@@ -21,6 +21,12 @@ Each agent in the AI-Q blueprint uses [Jinja2](https://jinja.palletsprojects.com
 | `src/aiq_agent/agents/deep_researcher/prompts/writer.j2` | Report Writer | Synthesizes the plan, research notes, and captured sources into `/shared/output.md` |
 | `src/aiq_agent/agents/deep_researcher/prompts/source_registry.j2` | Source Registry Middleware | Renders the captured source list exposed to the writer |
 | `src/aiq_agent/agents/clarifier/prompts/research_clarification.j2` | Clarifier | Determines whether a request needs clarification and asks focused follow-up questions; it does not create or approve a plan |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/query_clarifier.j2` | Hybrid Clarifier | Decides whether a catalog-supported question has ambiguous business meaning that requires user input before planning |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/planner.j2` | Hybrid Initial Planner | Produces the smallest complete coarse task graph without calling tools |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/continuation.j2` | Hybrid Continuation Planner | Chooses finish, append, or fail only after the current append-only ledger is exhausted |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/research_worker.j2` | Hybrid Research Worker | Executes one focused unstructured research task and returns structured `ResearchNotes` |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/structured_analysis.j2` | Hybrid Structured Analysis Worker | Runs a bounded observation-driven GSF and sandboxed-Python trajectory |
+| `src/aiq_agent/agents/hybrid_researcher/prompts/writer.j2` | Hybrid Writer | Cross-synthesizes the final successful ledger without tools or new calculations |
 
 ## Template Directory Structure
 
@@ -42,6 +48,14 @@ src/aiq_agent/agents/
     clarifier/
         prompts/
             research_clarification.j2  # Clarification prompt
+    hybrid_researcher/
+        prompts/
+            query_clarifier.j2         # Structured clarification policy
+            planner.j2                 # Initial coarse planning policy
+            continuation.j2            # Append-only continuation policy
+            research_worker.j2         # Focused research-task policy
+            structured_analysis.j2     # Bounded enterprise ReAct policy
+            writer.j2                  # Final cross-synthesis policy
     chat_researcher/
         prompts/
             intent_classification.j2   # Routing prompt
@@ -189,6 +203,33 @@ The writer reads the persisted plan and research notes from `/shared/` and retri
 | `tools` | `list[dict]` | Available tools (each has `name` and `description` keys) |
 | `tool_names` | `list[str]` | List of tool name strings extracted from `tools` |
 
+### Hybrid Research Clarifier
+
+The policy template is static. The clarifier sends one separate JSON context
+message containing only the original question, stable current date/time,
+clarification history, retained proposed defaults, catalog truncation and
+uncovered entities, and candidate label, attribute, and term. User identity,
+catalog coverage, candidate IDs, and the code-owned turn budget are excluded.
+
+The clarifier resolves ambiguous business meaning; it does not decompose the
+request or decide whether a structured-data node maps to one SQL or PQL
+statement.
+
+### Hybrid Research Worker
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `current_datetime` | `str` | Stable rendering-time date and time for the worker invocation |
+| `tools` | `list[dict]` | Request-filtered non-GSF source tools available to the worker |
+
+The Hybrid initial planner, continuation planner, structured-analysis worker,
+and writer are static policies followed by separate untrusted JSON context.
+The planners use structured output; the structured worker receives only GSF
+and sandboxed Python tools; the writer receives no tools. After its last tool
+call, the structured worker returns a bounded answer-ready evidence capsule.
+Continuation and the writer receive that capsule and bounded provenance rather
+than complete GSF rows, SQL, Python code, Python output, or sandbox paths.
+
 ## Modifying Prompts
 
 ### Editing Existing Templates
@@ -217,6 +258,11 @@ Each template has well-defined sections you can target:
 - **Source Router** (`source_router.j2`) — Advisory source-domain selection and planner guidance
 - **Deep Research Planner** (`planner.j2`) — Answer-shape analysis, plan grounding, and structured query generation
 - **Researcher Worker** (`researcher.j2`) — Single-query research protocol, source preferences, tool-call batching, and structured notes
+- **Hybrid Research Worker** (`research_worker.j2`) — Focused source use and structured notes without Deep Research batch or filesystem assumptions
+- **Hybrid Initial Planner** (`planner.j2`) — Coarse task decomposition without tool use
+- **Hybrid Continuation** (`continuation.j2`) — Finish, append, or fail after ledger exhaustion
+- **Hybrid Structured Analysis** (`structured_analysis.j2`) — Bounded GSF and Python/pandas trajectory
+- **Hybrid Writer** (`writer.j2`) — Direct synthesis from the terminal successful ledger
 - **Report Writer** (`writer.j2`) — Final synthesis, source use, citation format, and `/shared/output.md` contract
 - **Source Registry** (`source_registry.j2`) — Formatting for the captured-source list injected by middleware
 - **Clarifier** (`research_clarification.j2`) — What counts as "sufficiently specified", question style, multi-turn policy

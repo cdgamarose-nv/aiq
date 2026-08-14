@@ -17,11 +17,21 @@ This package connects AI-Q to NVIDIA Generative Semantic Fabric (GSF).
 
 Set `GSF_BASE_URL` to GSF's auth-aware API origin and add the function group to the data-source registry:
 
+By default, the function group owns one shared HTTP connection pool and keeps
+authentication request-scoped: each tool invocation obtains the current AI-Q
+user token and passes it to GSF without storing it on the client.
+`GSF_BASE_URL` must point to GSF's auth-aware API origin.
+Connect, pool-acquisition, request-write, and response-read operations use a
+300-second timeout by default. Override the connect and read settings only for
+a deployment with a measured need for different bounds.
+
 ```yaml
 function_groups:
   gsf:
     _type: gsf
     base_url: ${GSF_BASE_URL}
+    connect_timeout_seconds: 300
+    read_timeout_seconds: 300
     include:
       - catalog_search
       - text_to_sql
@@ -72,6 +82,18 @@ receive the named environment variable. The client does not fall back between
 authentication methods.
 
 ## API mapping
+
+Text-to-SQL uses GSF's `/api/chat/completions` SSE endpoint with
+`prediction: false`. Its optional AI-Q `database_name` input is sent to GSF as
+`target_db`, selecting an existing GSF connection rather than creating one.
+The adapter normalizes GSF's current response fields while preserving optional
+semantic and benchmarking fields as they become available.
+For text-to-SQL, AI-Q retains GSF's top-level `response` as the provider's
+primary analytical result, together with the generated SQL, bounded rows, and
+all structured semantic and validation provenance returned by the service.
+GSF's optional `thoughts` summary is retained as diagnostic context rather than
+authoritative evidence. The normalized response also exposes the bounded row
+count and a stable citation key derived from the request identity.
 
 - Catalog search calls `POST /api/question-entity-coverage`.
 - Text-to-SQL calls `POST /api/chat/completions` with `prediction: false`.

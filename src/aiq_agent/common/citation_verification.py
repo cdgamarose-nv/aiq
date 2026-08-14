@@ -452,13 +452,17 @@ class SourceRegistry:
         page than what the knowledge layer returned, and that's acceptable
         since the document itself was verified as a real source.
         """
+        return self.resolve_citation_key(key) is not None
+
+    def resolve_citation_key(self, key: str) -> str | None:
+        """Return the registry citation key for a lenient filename match."""
         target_file, _ = _parse_citation_key(key)
         target_lower = target_file.lower()
         for entry in self._citation_keys:
             entry_file, _ = _parse_citation_key(entry.citation_key)
             if entry_file.lower() == target_lower:
-                return True
-        return False
+                return entry.citation_key
+        return None
 
     def all_sources(self) -> list[SourceEntry]:
         """Return all registered sources."""
@@ -715,6 +719,29 @@ def _parse_generic_urls(content: str, tool_name: str) -> list[SourceEntry]:
     return entries
 
 
+def _parse_gsf_text_to_sql(content: str, tool_name: str) -> list[SourceEntry]:
+    """Capture the stable citation identity emitted by the GSF SQL adapter."""
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return _parse_generic_urls(content, tool_name)
+    if not isinstance(payload, dict):
+        return _parse_generic_urls(content, tool_name)
+
+    citation_key = payload.get("citation_key")
+    if not isinstance(citation_key, str) or not citation_key.strip():
+        return _parse_generic_urls(content, tool_name)
+    return [
+        SourceEntry(
+            citation_key=citation_key.strip(),
+            title="GSF structured data query",
+            source_type="gsf",
+            tool_name=tool_name,
+        )
+    ]
+
+
 # Knowledge layer is the only source that needs a specific parser because
 # it uses citation keys (e.g., "report.pdf, p.15") instead of URLs.
 _KL_CITATION_RE = re.compile(r"^Citation:\s*(.+)$", re.MULTILINE)
@@ -742,8 +769,8 @@ def _parse_knowledge_layer(content: str, tool_name: str) -> list[SourceEntry]:
     return entries
 
 
-# Register knowledge layer as the only special-case parser.
-# All other tools (Tavily, paper search, etc.) use the generic URL fallback.
+# Register URL-less structured sources that emit explicit citation keys.
+register_source_parser(lambda name: name == "gsf__text_to_sql", _parse_gsf_text_to_sql)
 register_source_parser(lambda name: "knowledge" in name, _parse_knowledge_layer)
 
 # ---------------------------------------------------------------------------
