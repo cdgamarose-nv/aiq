@@ -65,6 +65,7 @@ class StructuredAnalysisExecutor:
                 catalog_context=request.catalog_context,
                 dependency_results=request.dependency_runs,
                 database_name=request.database_name,
+                workflow_run_id=request.workflow_run_id,
             )
         )
         from .models import StructuredAnalysisResult

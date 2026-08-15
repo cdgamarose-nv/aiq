@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from gsf.models import DatabaseName
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
@@ -47,7 +48,7 @@ class StructuredAnalysisWorkerConfig(FunctionBaseConfig, name="structured_analys
     structured_analysis_llm: LLMRef
     sql_tool: FunctionRef
     sandbox: DeepResearchSandboxConfig | FunctionRef
-    database_name: str | None = Field(default=None, min_length=1)
+    database_name: DatabaseName | None = None
     sql_max_rows: int = Field(default=1_000, ge=1)
     structured_max_gsf_calls: int = Field(default=4, ge=1, le=4)
     structured_max_python_calls: int = Field(default=4, ge=1, le=4)
@@ -81,7 +82,7 @@ class HybridResearchAgentConfig(FunctionBaseConfig, name="hybrid_research_agent"
     writer_llm: LLMRef
     research_worker: FunctionRef
     structured_analysis_worker: FunctionRef
-    database_name: str | None = Field(default=None, min_length=1)
+    database_name: DatabaseName | None = None
     enable_clarifier: bool = True
     max_clarification_turns: int = Field(default=3, ge=1, le=10)
     max_parallel_tasks: int = Field(default=4, ge=1)

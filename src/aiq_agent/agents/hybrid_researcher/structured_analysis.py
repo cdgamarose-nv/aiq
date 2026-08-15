@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import posixpath
+import re
 import shlex
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -21,6 +23,7 @@ from typing import Any
 
 from gsf.errors import GSFErrorCode
 from gsf.errors import GSFToolError
+from gsf.models import DatabaseName
 from gsf.models import TextToSQLRequest
 from gsf.models import TextToSQLResponse
 from langchain.agents import create_agent
@@ -156,7 +159,7 @@ class StructuredAnalysisWorker:
         llm: BaseChatModel,
         gsf_invoke: GSFInvoke,
         sandbox_factory: SandboxFactory,
-        database_name: str | None = None,
+        database_name: DatabaseName | None = None,
         sql_max_rows: int = 1_000,
         callbacks: Sequence[BaseCallbackHandler] = (),
         prompt_template: str | None = None,
@@ -193,24 +196,27 @@ class StructuredAnalysisWorker:
 
     async def run(self, request: StructuredAnalysisRequest) -> StructuredAnalysisResult:
         """Execute one bounded trajectory and return only compact terminal evidence."""
-        provider = self._sandbox_factory(f"hybrid-structured-{request.task_id}")
-        terminate = False
+        provider: SandboxProvider | None = None
         attempts: list[_GSFQueryAttempt] = []
         question_keys: set[str] = set()
         tool_lock = asyncio.Lock()
         effective_database = request.database_name or self._database_name
 
+        def get_provider() -> SandboxProvider:
+            nonlocal provider
+            if provider is None:
+                provider = self._sandbox_factory(_sandbox_name(request.workflow_run_id, request.task_id))
+            return provider
+
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 query_gsf = self._build_gsf_tool(
-                    provider,
-                    request,
                     attempts,
                     question_keys,
                     tool_lock,
                     effective_database,
                 )
-                execute_python = self._build_python_tool(provider, request, attempts, tool_lock)
+                execute_python = self._build_python_tool(get_provider, request, attempts, tool_lock)
                 prompt = render_prompt_template(
                     self._prompt_template,
                     max_gsf_calls=self._max_gsf_calls,
@@ -252,32 +258,28 @@ class StructuredAnalysisWorker:
                     limitations=conclusion.limitations,
                 )
         except TimeoutError as exc:
-            terminate = True
             raise StructuredAnalysisTimeoutError(
                 f"Structured analysis exceeded its {self._timeout_seconds:g}-second deadline"
             ) from exc
         except asyncio.CancelledError:
-            terminate = True
             raise
         finally:
-            cleanup = provider.terminate if terminate else provider.close
-            try:
-                await asyncio.shield(asyncio.to_thread(cleanup))
-            except Exception as exc:  # noqa: BLE001 - cleanup must not hide task outcome
-                logger.warning(
-                    "Structured-analysis sandbox cleanup failed (task_id=%s error_type=%s)",
-                    request.task_id,
-                    type(exc).__name__,
-                )
+            if provider is not None:
+                try:
+                    await asyncio.shield(asyncio.to_thread(provider.terminate))
+                except Exception as exc:  # noqa: BLE001 - cleanup must not hide task outcome
+                    logger.warning(
+                        "Structured-analysis sandbox cleanup failed (task_id=%s error_type=%s)",
+                        request.task_id,
+                        type(exc).__name__,
+                    )
 
     def _build_gsf_tool(
         self,
-        provider: SandboxProvider,
-        request: StructuredAnalysisRequest,
         attempts: list[_GSFQueryAttempt],
         question_keys: set[str],
         tool_lock: asyncio.Lock,
-        database_name: str | None,
+        database_name: DatabaseName | None,
     ):
         @tool("query_gsf", args_schema=_QueryGSFInput)
         async def query_gsf(question: str) -> str:
@@ -320,15 +322,9 @@ class StructuredAnalysisWorker:
                     attempts.append(_GSFQueryAttempt(question=question, outcome=outcome))
                     return outcome.model_dump_json(exclude_none=True)
                 attempt = _GSFQueryAttempt(question=question, outcome=outcome)
-                manifest_path = await asyncio.to_thread(
-                    _persist_gsf_inputs,
-                    provider,
-                    request.task_id,
-                    (*attempts, attempt),
-                )
                 attempts.append(attempt)
             return json.dumps(
-                _model_projection(outcome, manifest_path, self._model_result_rows),
+                _model_projection(outcome, self._model_result_rows),
                 ensure_ascii=False,
                 default=str,
             )
@@ -337,7 +333,7 @@ class StructuredAnalysisWorker:
 
     def _build_python_tool(
         self,
-        provider: SandboxProvider,
+        get_provider: Callable[[], SandboxProvider],
         request: StructuredAnalysisRequest,
         attempts: list[_GSFQueryAttempt],
         tool_lock: asyncio.Lock,
@@ -354,16 +350,25 @@ class StructuredAnalysisWorker:
                     raise StructuredAnalysisError(f"execute_python allows at most {self._max_python_calls} calls")
                 if not any(isinstance(attempt.outcome, TextToSQLResponse) for attempt in attempts):
                     raise StructuredAnalysisError("execute_python is unavailable until one GSF query succeeds")
+                attempt_snapshot = tuple(attempts)
             if len(code) > self._max_code_chars:
                 raise StructuredAnalysisError(f"Python code exceeds {self._max_code_chars} characters")
 
+            provider = get_provider()
+            manifest_path = await asyncio.to_thread(
+                _persist_gsf_inputs,
+                provider,
+                request.task_id,
+                attempt_snapshot,
+                self._execute_timeout_seconds,
+            )
             task_dir = posixpath.join(provider.workdir, "hybrid", request.task_id)
             script_path = posixpath.join(task_dir, f"analysis-{python_calls}.py")
             output_path = posixpath.join(task_dir, f"analysis-{python_calls}.output.json")
             _upload_or_raise(provider, [(script_path, code.encode("utf-8"))])
             response = await asyncio.to_thread(
                 provider.execute,
-                f"python3 {shlex.quote(script_path)}",
+                f"AIQ_GSF_MANIFEST={shlex.quote(manifest_path)} python3 {shlex.quote(script_path)}",
                 timeout=self._execute_timeout_seconds,
             )
             output, worker_truncated = _truncate_text(response.output, self._max_output_chars)
@@ -539,8 +544,12 @@ def _persist_gsf_inputs(
     provider: SandboxProvider,
     task_id: str,
     attempts: Sequence[_GSFQueryAttempt],
+    timeout_seconds: int,
 ) -> str:
     input_dir = posixpath.join(provider.workdir, "hybrid", task_id, "gsf")
+    mkdir_response = provider.execute(f"mkdir -p {shlex.quote(input_dir)}", timeout=timeout_seconds)
+    if mkdir_response.exit_code != 0:
+        raise StructuredAnalysisUploadError("The structured-analysis sandbox could not create artifact directories")
     uploads: list[tuple[str, bytes]] = []
     entries: list[dict[str, Any]] = []
     for index, attempt in enumerate(attempts, start=1):
@@ -563,7 +572,7 @@ def _upload_or_raise(provider: SandboxProvider, uploads: list[tuple[str, bytes]]
         raise StructuredAnalysisUploadError("The structured-analysis sandbox rejected an artifact")
 
 
-def _model_projection(response: TextToSQLResponse, manifest_path: str, max_rows: int) -> dict[str, Any]:
+def _model_projection(response: TextToSQLResponse, max_rows: int) -> dict[str, Any]:
     return {
         "status": "success",
         "request_id": response.request_id,
@@ -576,9 +585,22 @@ def _model_projection(response: TextToSQLResponse, manifest_path: str, max_rows:
         "semantic_context": response.semantic_context.model_dump(mode="json") if response.semantic_context else None,
         "warnings": response.warnings or [],
         "assumptions": response.assumptions or [],
-        "manifest_path": manifest_path,
         "citation_key": response.citation_key,
     }
+
+
+def _sandbox_name(workflow_run_id: str, task_id: str) -> str:
+    """Build a legal Modal-compatible name with run and task identity."""
+    safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", workflow_run_id).strip("-._")
+    if not safe_run_id:
+        safe_run_id = hashlib.sha256(workflow_run_id.encode("utf-8")).hexdigest()[:12]
+    candidate = f"hybrid-{safe_run_id}-{task_id}"
+    if len(candidate) <= 64:
+        return candidate
+    run_digest = hashlib.sha256(workflow_run_id.encode("utf-8")).hexdigest()[:10]
+    task_digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:10]
+    visible_run = safe_run_id[: 64 - len(f"hybrid--{run_digest}-{task_digest}")]
+    return f"hybrid-{visible_run}-{run_digest}-{task_digest}"
 
 
 def _truncate_text(value: Any, max_chars: int) -> tuple[str, bool]:

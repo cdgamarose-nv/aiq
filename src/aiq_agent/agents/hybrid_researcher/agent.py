@@ -281,7 +281,8 @@ class HybridResearchAgent:
                         catalog_context=state.catalog_context,
                         dependency_runs=tuple(by_task[dependency] for dependency in task.depends_on),
                         data_sources=state.data_sources,
-                        database_name=self._database_name,
+                        database_name=state.database_name or self._database_name,
+                        workflow_run_id=state.workflow_run_id,
                     ).model_dump(mode="python"),
                 )
                 for task in ready

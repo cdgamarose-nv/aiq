@@ -19,13 +19,20 @@ minimizes latency for the common case (meta queries get an instant response)
 and avoids an extra round-trip for research queries.
 
 GSF-enabled profiles use the context-aware variant in
-`nodes/context_aware_intent_router.py`. In addition to interaction and depth
-routing, that variant performs one bounded catalog coverage probe. For a mixed
+`nodes/context_aware_intent_router.py`. It makes one typed LLM classification,
+then Python performs at most one bounded catalog coverage probe and selects the
+research path deterministically. For a mixed
 enterprise-and-public request, the probe is the smallest contiguous span that
 contains the complete enterprise-data question, copied verbatim from the user
 request. It is not a second research decomposition: no public subquery or plan
 is generated, and the complete original request continues to the selected
 research workflow.
+
+When a validated `database_name` is present, it is an authoritative structured-
+data scope rather than a hint. New research always performs the scoped catalog
+probe and continues to Hybrid even with low or empty coverage. A disabled or
+failed catalog is reported explicitly; the router does not fall back to web.
+Meta and active-report interactions are unaffected by database scope.
 
 The classifier outputs structured JSON with:
 

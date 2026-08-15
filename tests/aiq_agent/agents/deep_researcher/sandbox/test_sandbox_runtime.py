@@ -23,6 +23,7 @@ lazy creation, idempotency-gated retry, cleanup) is under test.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -40,6 +41,7 @@ from aiq_agent.agents.deep_researcher.sandbox import registered_providers
 from aiq_agent.agents.deep_researcher.sandbox import verify_capabilities
 from aiq_agent.agents.deep_researcher.sandbox.config import job_scoped_artifact_dir
 from aiq_agent.agents.deep_researcher.sandbox.config import job_scoped_workdir
+from aiq_agent.agents.deep_researcher.sandbox.providers.modal import ModalSandboxProvider
 
 
 class _RecoverableError(Exception):
@@ -131,6 +133,16 @@ class TestRegistry:
     def test_create_returns_provider_instance(self) -> None:
         backend = create_sandbox_backend(_fake_config(), "job-1")
         assert isinstance(backend, _RegisteredFake)
+
+
+def test_modal_provider_hard_terminates_wrapped_sdk_sandbox() -> None:
+    calls = []
+    provider = object.__new__(ModalSandboxProvider)
+    wrapped = SimpleNamespace(terminate=lambda *, wait: calls.append(wait))
+
+    provider._terminate_session(SimpleNamespace(_sandbox=wrapped))
+
+    assert calls == [True]
 
 
 class TestSandboxConfig:

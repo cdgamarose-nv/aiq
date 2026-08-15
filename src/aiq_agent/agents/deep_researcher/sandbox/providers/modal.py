@@ -26,6 +26,7 @@ from deepagents.backends.sandbox import BaseSandbox
 
 from ..base import SandboxProvider
 from ..capabilities import SandboxCapabilities
+from ..logging_utils import log_sandbox_failure
 from ..registry import register_sandbox_provider
 
 if TYPE_CHECKING:
@@ -162,6 +163,33 @@ class ModalSandboxProvider(SandboxProvider):
             sandbox = modal.Sandbox.from_name(modal_cfg.app_name, self.sandbox_name)
             logger.info("Modal sandbox attached to this job's existing instance: name=%s", self.sandbox_name)
         return ModalSandbox(sandbox=sandbox)
+
+    def _terminate_session(self, session: BaseSandbox | None) -> None:
+        """Hard-stop the Modal sandbox wrapped by ``langchain-modal``."""
+        if session is None:
+            return
+        sandbox = getattr(session, "_sandbox", None)
+        terminate = getattr(sandbox, "terminate", None)
+        if not callable(terminate):
+            self._record_cleanup_failure("session_terminate_unavailable")
+            logger.error(
+                "Modal sandbox termination unavailable: provider=%s sandbox=%s",
+                self.provider_name,
+                self.sandbox_name,
+            )
+            return
+        try:
+            terminate(wait=True)
+        except Exception as exc:  # noqa: BLE001 - cleanup must never raise on a terminal path
+            self._record_cleanup_failure("session_terminate_failed")
+            log_sandbox_failure(
+                logger,
+                operation="session_terminate",
+                reason_code="session_terminate_failed",
+                exc=exc,
+                provider=self.provider_name,
+                sandbox=self.sandbox_name,
+            )
 
 
 register_sandbox_provider("modal", ModalSandboxProvider)

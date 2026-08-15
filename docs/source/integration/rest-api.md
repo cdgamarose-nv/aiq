@@ -192,6 +192,18 @@ degrades to fresh research. The lookup is authorized like every other job read: 
 default) ownership is not enforced, so `conversation-id` is the only isolation boundary — keep it
 unguessable in any shared/multi-user deployment, consistent with the other job endpoints in that mode.
 
+For GSF-enabled chat requests, clients may also include an optional `database_name`
+in the top-level or nested chat content. It is a request scope, not a free-form
+query hint: values are limited to 128 letters, digits, dots, dashes, and
+underscores, must begin with a letter or digit, and are passed unchanged to both
+catalog search and Hybrid structured analysis. Invalid values fail validation;
+when omitted, the request remains unscoped unless a Hybrid worker has a configured
+fallback. For a new-research request, providing `database_name` makes structured
+data authoritative: the router always performs the scoped catalog call and stays
+on the Hybrid path even when catalog coverage is low or no candidates are returned.
+It never silently falls back to web research. If the request explicitly disables
+the GSF source, or if the scoped catalog call fails, routing fails explicitly.
+
 ### Get Job Status
 
 ```bash

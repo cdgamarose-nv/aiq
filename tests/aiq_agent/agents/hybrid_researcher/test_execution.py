@@ -82,12 +82,17 @@ async def test_structured_executor_passes_catalog_and_complete_dependencies():
     task = HybridTask(id="revenue", kind="structured_analysis", objective="Analyze revenue.")
     result = await StructuredAnalysisExecutor(invoke).execute(
         TaskExecutionRequest(
-            task=task, objective="Explain revenue.", catalog_context=_catalog(), database_name="finance"
+            task=task,
+            objective="Explain revenue.",
+            catalog_context=_catalog(),
+            database_name="finance",
+            workflow_run_id="workflow-run-1",
         )
     )
     assert result.conclusion == "Complete."
     assert captured.catalog_context == _catalog()
     assert captured.database_name == "finance"
+    assert captured.workflow_run_id == "workflow-run-1"
 
 
 async def test_executor_registry_sanitizes_worker_failure():

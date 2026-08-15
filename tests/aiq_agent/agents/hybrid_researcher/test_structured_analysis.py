@@ -35,14 +35,17 @@ class _Provider:
     def __init__(self) -> None:
         self.upload_calls: list[list[tuple[str, bytes]]] = []
         self.execute_calls = []
+        self.events = []
         self.closed = False
         self.terminated = False
 
     def upload_files(self, files):
+        self.events.append(("upload", [path for path, _content in files]))
         self.upload_calls.append(files)
         return [SimpleNamespace(path=path, error=None) for path, _content in files]
 
     def execute(self, command, *, timeout=None):
+        self.events.append(("execute", command))
         self.execute_calls.append((command, timeout))
         return ExecuteResponse(output="derived result", exit_code=0)
 
@@ -65,6 +68,7 @@ def _request() -> StructuredAnalysisRequest:
         ),
         dependency_results=(),
         database_name="finance",
+        workflow_run_id="workflow-run-123",
     )
 
 
@@ -80,6 +84,7 @@ def _response(question: str = "Revenue by quarter") -> TextToSQLResponse:
 async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
     provider = _Provider()
     captured: dict[str, Any] = {}
+    sandbox_names = []
 
     async def invoke(request):
         captured["gsf_request"] = request
@@ -106,7 +111,12 @@ async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
         "aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent",
         fake_create_agent,
     )
-    worker = StructuredAnalysisWorker(llm=object(), gsf_invoke=invoke, sandbox_factory=lambda _job: provider)
+
+    def sandbox_factory(name):
+        sandbox_names.append(name)
+        return provider
+
+    worker = StructuredAnalysisWorker(llm=object(), gsf_invoke=invoke, sandbox_factory=sandbox_factory)
     result = await worker.run(_request())
     assert result.sufficiency == "sufficient"
     assert len(result.gsf_provenance) == 1
@@ -114,13 +124,15 @@ async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
     assert result.gsf_provenance[0].returned_row_count == 2
     assert captured["gsf_request"].database_name == "finance"
     assert captured["projection"]["rows"] == _response().rows
-    assert captured["projection"]["manifest_path"].endswith("/gsf/manifest.json")
+    assert "manifest_path" not in captured["projection"]
     user_context = json.loads(captured["state"]["messages"][0]["content"])
     assert "private-id" not in str(user_context)
     assert "private-catalog-id" not in str(user_context)
     assert [item.name for item in captured["tools"]] == ["query_gsf", "execute_python"]
     assert "within 8000 characters" in captured["system_prompt"]
-    assert provider.closed and not provider.terminated
+    assert sandbox_names == []
+    assert provider.upload_calls == []
+    assert not provider.closed and not provider.terminated
 
 
 async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
@@ -151,16 +163,24 @@ async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
         return Agent()
 
     monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    sandbox_calls = 0
+
+    def sandbox_factory(_name):
+        nonlocal sandbox_calls
+        sandbox_calls += 1
+        return provider
+
     result = await StructuredAnalysisWorker(
         llm=object(),
         gsf_invoke=lambda _request: asyncio.sleep(0, result=response),
-        sandbox_factory=lambda _job: provider,
+        sandbox_factory=sandbox_factory,
     ).run(_request())
 
-    uploaded = {path: content for batch in provider.upload_calls for path, content in batch}
-    response_path = next(path for path in uploaded if path.endswith("response-1.json"))
-    assert sentinel in uploaded[response_path].decode()
+    assert sandbox_calls == 0
+    assert provider.upload_calls == []
     assert sentinel in str(captured["tool_result"]["rows"])
+    assert len(captured["tool_result"]["rows"]) == 25
+    assert captured["tool_result"]["rows_projection_truncated"] is True
     terminal_json = result.model_dump_json()
     assert sentinel not in terminal_json
     assert '"rows"' not in terminal_json
@@ -282,11 +302,13 @@ async def test_successful_wrong_grain_allows_materially_different_followup(monke
 async def test_python_requires_success_then_reads_complete_manifest(monkeypatch):
     provider = _Provider()
     captured = {}
+    sandbox_names = []
 
     class Agent:
         async def ainvoke(self, _state, config=None):
             with pytest.raises(StructuredAnalysisError, match="until one GSF query succeeds"):
                 await captured["tools"][1].ainvoke({"code": "print(1)"})
+            assert sandbox_names == []
             await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
             captured["python"] = json.loads(await captured["tools"][1].ainvoke({"code": "print('derived')"}))
             return {
@@ -305,12 +327,16 @@ async def test_python_requires_success_then_reads_complete_manifest(monkeypatch)
     worker = StructuredAnalysisWorker(
         llm=object(),
         gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
-        sandbox_factory=lambda _job: provider,
+        sandbox_factory=lambda name: sandbox_names.append(name) or provider,
     )
     result = await worker.run(_request())
     uploaded = {path: content for batch in provider.upload_calls for path, content in batch}
     response_path = next(path for path in uploaded if path.endswith("response-1.json"))
     assert json.loads(uploaded[response_path])["rows"] == _response().rows
+    assert provider.events[0][0] == "execute"
+    assert provider.events[0][1].startswith("mkdir -p ")
+    python_command = next(command for command, _timeout in provider.execute_calls if "python3" in command)
+    assert "AIQ_GSF_MANIFEST=" in python_command
     assert captured["python"]["output"] == "derived result"
     assert "print('derived')" not in result.model_dump_json()
     assert "derived result" not in result.model_dump_json()
@@ -318,6 +344,127 @@ async def test_python_requires_success_then_reads_complete_manifest(monkeypatch)
     assert captured["python"]["output_artifact"] not in result.model_dump_json()
     assert uploaded[captured["python"]["code_artifact"]] == b"print('derived')"
     assert json.loads(uploaded[captured["python"]["output_artifact"]])["output"] == "derived result"
+    assert provider.terminated and not provider.closed
+    assert sandbox_names == ["hybrid-workflow-run-123-revenue_analysis"]
+
+
+async def test_later_python_call_refreshes_manifest_with_new_gsf_success(monkeypatch):
+    provider = _Provider()
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Annual revenue"})
+            await captured["tools"][1].ainvoke({"code": "print('annual')"})
+            await captured["tools"][0].ainvoke({"question": "Quarterly revenue"})
+            await captured["tools"][1].ainvoke({"code": "print('quarterly')"})
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "Both complete results were analyzed.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda request: asyncio.sleep(0, result=_response(request.question)),
+        sandbox_factory=lambda _name: provider,
+    ).run(_request())
+
+    manifests = [
+        json.loads(content)
+        for upload in provider.upload_calls
+        for path, content in upload
+        if path.endswith("manifest.json")
+    ]
+    assert [len(manifest["successful_gsf_responses"]) for manifest in manifests] == [1, 2]
+
+
+async def test_provider_terminates_when_agent_fails_after_python(monkeypatch):
+    provider = _Provider()
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            await captured["tools"][1].ainvoke({"code": "print('derived')"})
+            raise RuntimeError("model failed")
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    worker = StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+    )
+    with pytest.raises(RuntimeError, match="model failed"):
+        await worker.run(_request())
+    assert provider.terminated and not provider.closed
+
+
+async def test_provider_terminates_on_timeout_after_python(monkeypatch):
+    provider = _Provider()
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            await captured["tools"][1].ainvoke({"code": "print('derived')"})
+            await asyncio.sleep(1)
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    worker = StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+        timeout_seconds=0.1,
+    )
+    with pytest.raises(StructuredAnalysisTimeoutError):
+        await worker.run(_request())
+    assert provider.terminated and not provider.closed
+
+
+async def test_provider_terminates_on_cancellation_after_python(monkeypatch):
+    provider = _Provider()
+    captured = {}
+    sandbox_ready = asyncio.Event()
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            await captured["tools"][1].ainvoke({"code": "print('derived')"})
+            sandbox_ready.set()
+            await asyncio.Event().wait()
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    worker = StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+    )
+    run_task = asyncio.create_task(worker.run(_request()))
+    await asyncio.wait_for(sandbox_ready.wait(), 1)
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert provider.terminated and not provider.closed
 
 
 def test_structured_conclusion_and_provenance_are_bounded_contracts():
@@ -417,12 +564,20 @@ async def test_total_timeout_terminates_sandbox(monkeypatch):
         "aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent",
         lambda **_kwargs: Agent(),
     )
+    sandbox_calls = 0
+
+    def sandbox_factory(_name):
+        nonlocal sandbox_calls
+        sandbox_calls += 1
+        return provider
+
     worker = StructuredAnalysisWorker(
         llm=object(),
         gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
-        sandbox_factory=lambda _job: provider,
+        sandbox_factory=sandbox_factory,
         timeout_seconds=0.01,
     )
     with pytest.raises(StructuredAnalysisTimeoutError, match="0.01-second deadline"):
         await worker.run(_request())
-    assert provider.terminated and not provider.closed
+    assert sandbox_calls == 0
+    assert not provider.terminated and not provider.closed

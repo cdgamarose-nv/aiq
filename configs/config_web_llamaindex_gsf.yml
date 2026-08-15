@@ -31,11 +31,39 @@ general:
         - "*"
 
 llms:
-  nemotron_ultra_llm:
+  nemotron_lightning_intent_llm:
     _type: nim
-    model_name: nvidia/nemotron-3-ultra-550b-a55b
+    model_name: nvidia/nemotron-3.5-lightning-30b-a3b
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key: ${NVIDIA_API_KEY}
+    temperature: 0.1
+    top_p: 0.9
+    max_tokens: 1024
+    num_retries: 5
+    parallel_tool_calls: false
+    chat_template_kwargs:
+      enable_thinking: false
+
+  # Known limitation: Build-hosted Lightning can intermittently produce citation-incomplete shallow drafts.
+  # AI-Q fails closed; see docs/source/resources/troubleshooting.md#nemotron-35-lightning-on-nvidia-api-catalog.
+  nemotron_lightning_agent_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3.5-lightning-30b-a3b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 8192
+    num_retries: 5
+    parallel_tool_calls: false
+    chat_template_kwargs:
+      enable_thinking: true
+
+  nemotron_ultra_llm:
+    _type: nim
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    api_key: ${INFERENCE_NVIDIA_API_KEY}
     temperature: 0.2
     top_p: 0.7
     max_tokens: 16384
@@ -45,9 +73,9 @@ llms:
 
   nemotron_ultra_writer_llm:
     _type: nim
-    model_name: nvidia/nemotron-3-ultra-550b-a55b
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key: ${NVIDIA_API_KEY}
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    api_key: ${INFERENCE_NVIDIA_API_KEY}
     temperature: 0.2
     top_p: 0.7
     max_tokens: 32768
@@ -57,10 +85,10 @@ llms:
 
   summary_llm:
     _type: nim
-    model_name: nvidia/nemotron-mini-4b-instruct
+    model_name: google/gemma-4-31b-it
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key: ${NVIDIA_API_KEY}
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 100
 
 function_groups:
@@ -122,7 +150,7 @@ functions:
 
   intent_classifier:
     _type: context_aware_intent_router
-    llm: nemotron_ultra_llm
+    llm: nemotron_lightning_intent_llm
     catalog_tool: gsf__catalog_search
     catalog_source_id: gsf
     max_catalog_results: 10
@@ -196,7 +224,7 @@ functions:
 
   shallow_research_agent:
     _type: shallow_research_agent
-    llm: nemotron_ultra_llm
+    llm: nemotron_lightning_agent_llm
     exclude_tools:
       - advanced_web_search_tool
       - gsf__catalog_search

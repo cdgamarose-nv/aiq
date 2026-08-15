@@ -21,6 +21,8 @@ from aiq_agent.agents.hybrid_researcher.models import StructuredAnalysisResult
 def _state() -> HybridResearchState:
     return HybridResearchState(
         question="Compare revenue with market context.",
+        workflow_run_id="workflow-run-1",
+        database_name="finance_prod",
         catalog_context=CatalogRoutingResponse(
             coverage=1,
             candidates=[CatalogCandidate(id="metric", label="Metric", attribute="recognized", term="Revenue")],
@@ -45,9 +47,11 @@ async def test_parallel_tasks_dependency_levels_and_single_terminal_continuation
     roots_started = set()
     roots_ready = asyncio.Event()
     events = []
+    request_scopes = []
 
     class Executor:
         async def execute(self, request):
+            request_scopes.append((request.workflow_run_id, request.database_name))
             events.append(f"start:{request.task.id}")
             if request.task.id in {"market", "revenue"}:
                 roots_started.add(request.task.id)
@@ -101,6 +105,7 @@ async def test_parallel_tasks_dependency_levels_and_single_terminal_continuation
     assert events.index("start:comparison") > events.index("finish:market")
     assert events.index("start:comparison") > events.index("finish:revenue")
     assert continuation_calls == 1
+    assert set(request_scopes) == {("workflow-run-1", "finance_prod")}
     assert result.final_answer == "Complete answer."
 
 

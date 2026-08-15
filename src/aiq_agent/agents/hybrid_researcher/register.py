@@ -169,14 +169,17 @@ async def hybrid_research_agent(config: HybridResearchAgentConfig, builder: Buil
             if chat_state.catalog_context is None:
                 raise ValueError("Hybrid Research requires catalog_context from the entry router")
             question = chat_state.original_query or get_latest_user_query(chat_state.messages)
+            workflow_run_id = _workflow_run_id()
             state = HybridResearchState(
                 question=question,
                 catalog_context=chat_state.catalog_context,
+                workflow_run_id=workflow_run_id,
+                database_name=chat_state.database_name,
                 data_sources=chat_state.data_sources,
                 skip_clarifier=chat_state.skip_clarifier,
                 user_info=chat_state.user_info,
             )
-            result = await agent.run(state, thread_id=f"hybrid:{_workflow_run_id()}")
+            result = await agent.run(state, thread_id=f"hybrid:{workflow_run_id}")
             return hybrid_boundary_update(result)
         except Exception as exc:  # noqa: BLE001 - sanitize failures at parent workflow boundary
             logger.warning("Hybrid Research failed (error_type=%s)", type(exc).__name__)

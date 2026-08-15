@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import operator
+import uuid
 from datetime import datetime
 from typing import Annotated
 from typing import Any
 from typing import Literal
 
+from gsf.models import DatabaseName
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -39,6 +41,7 @@ GSF_PROVENANCE_MAX_ERROR_CHARS = 1_000
 GSF_PROVENANCE_MAX_IDENTIFIER_CHARS = 512
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+WorkflowRunId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 GSFQuestionText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=GSF_QUESTION_MAX_CHARS),
@@ -293,7 +296,8 @@ class StructuredAnalysisRequest(_StrictModel):
     task_objective: NonEmptyText
     catalog_context: CatalogRoutingResponse
     dependency_results: tuple[TaskRun, ...]
-    database_name: str | None = None
+    database_name: DatabaseName | None = None
+    workflow_run_id: WorkflowRunId = Field(default_factory=lambda: str(uuid.uuid4()))
 
     @field_validator("dependency_results")
     @classmethod
@@ -312,7 +316,8 @@ class TaskExecutionRequest(_StrictModel):
     catalog_context: CatalogRoutingResponse
     dependency_runs: tuple[TaskRun, ...] = ()
     data_sources: list[NonEmptyText] | None = None
-    database_name: str | None = None
+    database_name: DatabaseName | None = None
+    workflow_run_id: WorkflowRunId = Field(default_factory=lambda: str(uuid.uuid4()))
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> TaskExecutionRequest:
@@ -330,6 +335,8 @@ class HybridResearchState(_StrictModel):
 
     question: NonEmptyText
     catalog_context: CatalogRoutingResponse
+    workflow_run_id: WorkflowRunId = Field(default_factory=lambda: str(uuid.uuid4()))
+    database_name: DatabaseName | None = None
     data_sources: list[NonEmptyText] | None = None
     skip_clarifier: bool = False
     user_info: dict[str, Any] | None = None
@@ -385,4 +392,5 @@ __all__ = [
     "TaskResult",
     "TaskRun",
     "TaskStatus",
+    "WorkflowRunId",
 ]

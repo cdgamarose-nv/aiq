@@ -615,8 +615,9 @@ Research planner, batch scheduler, or writer, and GSF tools are always excluded.
 
 The structured-analysis worker is invoked once per coarse enterprise task. It
 retains every GSF response/error in attempt order only while the worker is
-active and may use sandboxed pandas over its complete worker-local response
-manifest. It does not expose catalog search, public
+active. It returns a bounded projection immediately and creates a sandbox plus
+complete worker-local response manifest only if the model calls
+`execute_python`. It does not expose catalog search, public
 research, user interaction, or final-answer writing. Its final answer-ready
 evidence capsule is limited to 8,000 characters; model-facing downstream
 contexts receive that capsule and bounded provenance instead of raw rows or
@@ -635,7 +636,7 @@ Python code/output.
 | `python_execute_timeout_seconds` | `int` | `60` | Maximum duration of one Python execution. |
 | `max_code_chars` | `int` | `40000` | Maximum generated Python size per call. |
 | `max_output_chars` | `int` | `40000` | Maximum Python output projected back to the model. |
-| `model_result_rows` | `int` | `25` | Maximum GSF rows projected to the model; complete responses remain worker-local until sandbox cleanup. |
+| `model_result_rows` | `int` | `25` | Maximum GSF rows projected to the model; complete responses remain worker-local and are uploaded only for a requested Python calculation. |
 | `verbose` | `bool` | `false` | Enable worker callback tracing. |
 
 ---

@@ -176,6 +176,7 @@ async def test_registered_hybrid_agent_maps_chat_state_to_skeleton_state():
             messages=[HumanMessage(content="Compare revenue.")],
             catalog_context=_catalog_context(),
             data_sources=["web_search", "gsf"],
+            database_name="finance_prod",
         )
         update = await function_info.single_fn(chat_state)
         await registration.aclose()
@@ -184,6 +185,8 @@ async def test_registered_hybrid_agent_maps_chat_state_to_skeleton_state():
     assert state.question == "Compare revenue."
     assert state.catalog_context == chat_state.catalog_context
     assert state.data_sources == ["web_search", "gsf"]
+    assert state.database_name == "finance_prod"
+    assert state.workflow_run_id == "run-1"
     assert agent_class.call_args.kwargs["verbose"] is True
     assert fake_agent.run.await_args.kwargs["thread_id"] == "hybrid:run-1"
     assert update["workflow_outcome"].status == "success"

@@ -120,13 +120,21 @@ Each template receives different variables depending on the agent context.
 | `tools` | `list[dict]` | Available tools (each has `name` and `description` keys) |
 | `query` | `str` | The user's query text |
 | `active_report_available` | `bool` | Whether the conversation has a report that can be edited or extended |
+| `catalog_enabled` | `bool` | Whether the request permits use of the catalog source |
+| `database_scope_provided` | `bool` | Whether a validated database scope was supplied; the value itself is not exposed to the model |
 
-The GSF-enabled context-aware router also receives catalog availability and
-configured search bounds. For a mixed enterprise-and-public request, it sends a
-contiguous enterprise-data span copied verbatim from the user request as the
-catalog tool's `question`. It does not create a public-research subquery or
-plan, and the original user request remains the downstream research input.
-Python rejects a catalog question that is not a verbatim span of that request.
+The GSF-enabled context-aware router makes one typed LLM classification call;
+the catalog tool is not exposed to that model. For a selected catalog search,
+Python validates the optional proposed enterprise-data span against the user
+request, falls back to the complete request when the proposed span is missing
+or unsafe, and performs the catalog call with configured bounds and the exact
+validated per-request database scope. Python then selects Hybrid or classic
+research from catalog coverage for unscoped requests. A scoped new-research
+request always searches the catalog and remains Hybrid regardless of coverage;
+a disabled or failed catalog produces an explicit failure instead of web
+fallback. The model output deliberately has no redundant
+`structured_data_required` field: `catalog_action` is the sole applicability
+decision.
 
 ### Shallow Researcher
 

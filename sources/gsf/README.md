@@ -98,5 +98,6 @@ count and a stable citation key derived from the request identity.
 - Catalog search calls `POST /api/question-entity-coverage`.
 - Text-to-SQL calls `POST /api/chat/completions` with `prediction: false`.
 - Text-to-PQL calls `POST /api/chat/completions` with `prediction: true`.
-- Normal AI-Q calls rely on GSF's routing and omit database selection.
-- Automated benchmarks may explicitly set optional `database_name`; AI-Q forwards it to GSF as `target_db`.
+- Unscoped AI-Q calls rely on GSF's routing and omit database selection.
+- GSF-enabled chat requests and automated benchmarks may explicitly set a validated optional `database_name`; AI-Q
+  forwards it unchanged to catalog search and to GSF as `target_db` for structured queries.

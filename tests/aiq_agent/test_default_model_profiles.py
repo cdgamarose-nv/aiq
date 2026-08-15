@@ -14,10 +14,14 @@ from aiq_agent.common import LLMProvider
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHARED_SHALLOW_PROMPT = REPO_ROOT / "src/aiq_agent/agents/shallow_researcher/prompts/researcher.j2"
 BREV_GETTING_STARTED_NOTEBOOK = REPO_ROOT / "docs/notebooks/0_Getting_Started_with_AIQ.ipynb"
+GSF_CONFIG_PATH = REPO_ROOT / "configs/config_web_llamaindex_gsf.yml"
 
 ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 LIGHTNING_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 BUILD_BASE_URL = "https://integrate.api.nvidia.com/v1"
+INFERENCE_HUB_ULTRA_MODEL = "nvidia/nvidia/nemotron-3-ultra"
+INFERENCE_HUB_BASE_URL = "https://inference-api.nvidia.com/v1"
+INFERENCE_HUB_HOST = "inference-api.nvidia.com"
 
 CONFIG_GLOBS = (
     ".agents/skills/aiq-configure-workflow/assets/config-scaffold.yml",
@@ -38,7 +42,7 @@ DEPRECATED_REFERENCES = (
     "/".join(("nvidia", "llama-nemotron-embed-vl-1b-v2")),
     "/".join(("nvidia", "nemotron-nano-12b-v2-vl")),
     "/".join(("openai", "gpt-oss-120b")),
-    ".".join(("inference-api", "nvidia", "com")),
+    INFERENCE_HUB_HOST,
 )
 SCANNED_SUFFIXES = {
     ".baseline",
@@ -95,6 +99,7 @@ def test_default_profiles_use_role_appropriate_models(config_path: Path):
     config = _load_config(config_path)
     functions = config.get("functions", {})
     is_frontier_profile = config_path.name == "config_frontier_models.yml"
+    expected_ultra_model = INFERENCE_HUB_ULTRA_MODEL if config_path == GSF_CONFIG_PATH else ULTRA_MODEL
 
     for function in functions.values():
         if not isinstance(function, dict):
@@ -128,7 +133,7 @@ def test_default_profiles_use_role_appropriate_models(config_path: Path):
             assert not config["llms"][alias]["parallel_tool_calls"]
             assert _thinking_enabled(config, alias)
         elif not is_frontier_profile and function_type == "clarifier_agent":
-            assert _model_for_alias(config, function["llm"]) == ULTRA_MODEL
+            assert _model_for_alias(config, function["llm"]) == expected_ultra_model
         elif not is_frontier_profile and function_type == "deep_research_agent":
             assert function["writer_llm"] == "nemotron_ultra_writer_llm"
             for role in (
@@ -138,7 +143,17 @@ def test_default_profiles_use_role_appropriate_models(config_path: Path):
                 "planner_llm",
                 "writer_llm",
             ):
-                assert _model_for_alias(config, function[role]) == ULTRA_MODEL
+                assert _model_for_alias(config, function[role]) == expected_ultra_model
+
+
+def test_gsf_profile_uses_inference_hub_for_ultra_roles():
+    config = _load_config(GSF_CONFIG_PATH)
+
+    for alias in ("nemotron_ultra_llm", "nemotron_ultra_writer_llm"):
+        model = config["llms"][alias]
+        assert model["model_name"] == INFERENCE_HUB_ULTRA_MODEL
+        assert model["base_url"] == INFERENCE_HUB_BASE_URL
+        assert model["api_key"] == "${INFERENCE_NVIDIA_API_KEY}"
 
 
 @pytest.mark.parametrize("config_path", FRESHQA_CONFIG_PATHS, ids=lambda path: path.name)
@@ -203,9 +218,11 @@ def test_deprecated_model_and_endpoint_references_are_absent():
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES or IGNORED_PARTS.intersection(path.parts):
             continue
 
-        text = path.read_text(encoding="utf-8")
-        for reference in DEPRECATED_REFERENCES:
-            if reference in text:
-                violations.append(f"{path.relative_to(REPO_ROOT)}: {reference}")
+            text = path.read_text(encoding="utf-8")
+            for reference in DEPRECATED_REFERENCES:
+                if path == GSF_CONFIG_PATH and reference == INFERENCE_HUB_HOST:
+                    continue
+                if reference in text:
+                    violations.append(f"{path.relative_to(REPO_ROOT)}: {reference}")
 
     assert not violations, "Deprecated references remain:\n" + "\n".join(violations)

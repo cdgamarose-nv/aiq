@@ -120,13 +120,25 @@ def test_task_run_enforces_typed_result_and_status():
 
 
 def test_state_uses_parallel_append_reducer_and_requires_catalog_candidates():
-    state = HybridResearchState(question="Compare revenue.", catalog_context=_catalog())
+    state = HybridResearchState(
+        question="Compare revenue.",
+        catalog_context=_catalog(),
+        workflow_run_id="workflow-run-1",
+        database_name="finance_prod",
+    )
     annotation = get_type_hints(HybridResearchState, include_extras=True)["task_runs"]
     assert operator.add in get_args(annotation)
     assert state.task_runs == []
     assert state.plan_extensions == 0
+    assert state.workflow_run_id == "workflow-run-1"
+    assert state.database_name == "finance_prod"
     with pytest.raises(ValidationError, match="requires catalog candidates"):
         HybridResearchState(
             question="Compare revenue.",
             catalog_context=CatalogRoutingResponse(coverage=0, candidates=[]),
         )
+
+
+def test_hybrid_contracts_reject_invalid_database_scope():
+    with pytest.raises(ValidationError):
+        HybridResearchState(question="Compare revenue.", catalog_context=_catalog(), database_name="finance prod")
