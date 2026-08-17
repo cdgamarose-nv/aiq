@@ -234,6 +234,9 @@ class InitialTaskPlanner:
         assert state.clarified_question is not None
         if plan.objective != state.clarified_question:
             raise InvalidTaskGraphError("Plan objective must exactly match the clarified objective.")
+        if len(plan.tasks) == 1:
+            only_task = plan.tasks[0].model_copy(update={"objective": plan.objective})
+            plan = plan.model_copy(update={"tasks": (only_task,)})
         validate_task_graph(plan.tasks, max_total_tasks=self._max_total_tasks)
         return plan
 

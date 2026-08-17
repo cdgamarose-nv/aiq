@@ -87,6 +87,22 @@ async def test_initial_planner_allows_parallel_multiple_kinds_and_known_dependen
     assert model.schema is HybridTaskPlan
 
 
+async def test_single_task_keeps_clarified_objective_without_procedural_drift():
+    state = _state()
+    proposed = HybridTaskPlan(
+        objective=state.clarified_question,
+        tasks=(
+            HybridTask(
+                id="decline",
+                kind="structured_analysis",
+                objective="Fetch every intermediate row, then calculate the decline.",
+            ),
+        ),
+    )
+    plan = await InitialTaskPlanner(_Model([proposed]))(state)
+    assert plan.tasks[0].objective == state.clarified_question
+
+
 def test_graph_validation_rejects_exact_duplicates_cycles_missing_dependencies_and_total_limit():
     first = HybridTask(id="first", kind="research", objective="Research context.")
     with pytest.raises(InvalidTaskGraphError, match="exact duplicate"):

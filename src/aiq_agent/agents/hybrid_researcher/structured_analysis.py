@@ -110,44 +110,129 @@ class _GSFQueryAttempt:
 
     question: str
     outcome: TextToSQLResponse | GSFToolError
+    blocks_followup: bool = False
 
 
 class _SequentialGSFMiddleware(AgentMiddleware):
-    """Reject every GSF call when a model emits multiple calls in one turn."""
+    """Serialize data tools and require every observation before a conclusion."""
 
     def __init__(self) -> None:
-        self._rejected_call_ids: set[str] = set()
+        self._seen_questions: set[str] = set()
 
     async def awrap_model_call(self, request, handler):
+        policy = _next_tool_policy(request.messages)
+        if policy == "python":
+            tools = [tool for tool in request.tools or [] if _tool_name(tool) != "query_gsf"]
+            request = request.override(tools=tools, tool_choice="execute_python")
+        elif policy == "final":
+            tools = [tool for tool in request.tools or [] if _tool_name(tool) not in {"query_gsf", "execute_python"}]
+            override = {"tools": tools}
+            if len(tools) == 1 and (tool_name := _tool_name(tools[0])) is not None:
+                override["tool_choice"] = tool_name
+            request = request.override(**override)
         response = await handler(request)
         if not isinstance(response, ModelResponse):
             return response
+        result = []
+        data_call_retained = False
+        discarded_call_ids: set[str] = set()
         for message in response.result:
             if not isinstance(message, AIMessage):
+                result.append(message)
                 continue
-            calls = [call for call in message.tool_calls if call.get("name") == "query_gsf"]
-            if len(calls) > 1:
-                self._rejected_call_ids.update(str(call.get("id", "")) for call in calls)
-        return response
+            data_calls = [call for call in message.tool_calls if call.get("name") in {"query_gsf", "execute_python"}]
+            if not data_calls:
+                result.append(message)
+                continue
+            selected = self._select_data_call(data_calls)
+            discarded_call_ids.update(
+                call_id
+                for call in message.tool_calls
+                if call is not selected and isinstance((call_id := call.get("id")), str)
+            )
+            result.append(message.model_copy(update={"tool_calls": [selected]}))
+            data_call_retained = True
+        if not data_call_retained:
+            return response
+        result = [
+            message
+            for message in result
+            if not (
+                isinstance(message, ToolMessage)
+                and isinstance(message.tool_call_id, str)
+                and message.tool_call_id in discarded_call_ids
+            )
+        ]
+        return ModelResponse(result=result, structured_response=None)
 
-    async def awrap_tool_call(self, request, handler):
-        call_id = str(request.tool_call.get("id", ""))
-        if call_id not in self._rejected_call_ids:
-            return await handler(request)
-        self._rejected_call_ids.discard(call_id)
-        return ToolMessage(
-            content=json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_request",
-                    "retryable": False,
-                    "message": "Multiple query_gsf calls in one model turn are not allowed; observe each result first.",
-                }
-            ),
-            tool_call_id=call_id or "parallel-gsf-rejected",
-            name="query_gsf",
-            status="error",
-        )
+    def _select_data_call(self, calls: list[dict[str, Any]]) -> dict[str, Any]:
+        gsf_calls = [call for call in calls if call.get("name") == "query_gsf"]
+        selected = calls[0]
+        for call in gsf_calls:
+            question = call.get("args", {}).get("question")
+            if isinstance(question, str) and _normalize_question(question) not in self._seen_questions:
+                selected = call
+                break
+        if selected.get("name") == "query_gsf":
+            question = selected.get("args", {}).get("question")
+            if isinstance(question, str):
+                self._seen_questions.add(_normalize_question(question))
+        return selected
+
+
+def _normalize_question(question: str) -> str:
+    return " ".join(question.split()).casefold()
+
+
+def _tool_name(tool: Any) -> str | None:
+    if isinstance(tool, Mapping):
+        name = tool.get("name")
+        return name if isinstance(name, str) else None
+    name = getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
+
+
+def _next_tool_policy(messages: Sequence[Any]) -> str | None:
+    if not messages or not isinstance(messages[-1], ToolMessage):
+        return None
+    latest = messages[-1]
+    payload = _tool_payload(latest)
+    if latest.name == "execute_python":
+        if payload is not None and payload.get("status") == "success":
+            return "final"
+        if payload is not None and payload.get("code") == "repeated_python":
+            return "final"
+        return "python"
+    is_error = latest.status == "error" or (payload is not None and payload.get("status") == "error")
+    if not is_error:
+        return None
+    for message in reversed(messages[:-1]):
+        if not isinstance(message, ToolMessage) or message.name != "query_gsf":
+            continue
+        if _needs_complete_rows(_tool_payload(message)):
+            return "python"
+        break
+    return "final"
+
+
+def _tool_payload(message: ToolMessage) -> Mapping[str, Any] | None:
+    content = message.content
+    if not isinstance(content, str):
+        return None
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _needs_complete_rows(payload: Mapping[str, Any] | None) -> bool:
+    return bool(
+        payload
+        and payload.get("status") == "success"
+        and payload.get("rows_projection_truncated") is True
+        and payload.get("result_truncated") is False
+    )
 
 
 class StructuredAnalysisWorker:
@@ -169,7 +254,7 @@ class StructuredAnalysisWorker:
         max_python_calls: int = 4,
         max_code_chars: int = 40_000,
         max_output_chars: int = 40_000,
-        model_result_rows: int = 25,
+        model_result_rows: int = 100,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -251,9 +336,10 @@ class StructuredAnalysisWorker:
                 )
                 structured = result.get("structured_response") if isinstance(result, Mapping) else None
                 conclusion = _StructuredConclusion.model_validate(structured)
+                content = _append_complete_rows_when_bounded(conclusion.content, attempts)
                 return StructuredAnalysisResult(
                     sufficiency=conclusion.sufficiency,
-                    conclusion=conclusion.content,
+                    conclusion=content,
                     gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
                     limitations=conclusion.limitations,
                 )
@@ -284,9 +370,9 @@ class StructuredAnalysisWorker:
         @tool("query_gsf", args_schema=_QueryGSFInput)
         async def query_gsf(question: str) -> str:
             """Ask one natural-language enterprise question and inspect the validated result before asking another."""
-            key = " ".join(question.split()).casefold()
+            key = _normalize_question(question)
             async with tool_lock:
-                if attempts and isinstance(attempts[-1].outcome, GSFToolError):
+                if attempts and attempts[-1].blocks_followup:
                     error = GSFToolError(
                         code=GSFErrorCode.INVALID_REQUEST,
                         retryable=False,
@@ -295,7 +381,7 @@ class StructuredAnalysisWorker:
                             "Stop and report the limitation."
                         ),
                     )
-                    attempts.append(_GSFQueryAttempt(question=question, outcome=error))
+                    attempts.append(_GSFQueryAttempt(question=question, outcome=error, blocks_followup=True))
                     return error.model_dump_json(exclude_none=True)
                 if key in question_keys:
                     error = GSFToolError(
@@ -319,7 +405,7 @@ class StructuredAnalysisWorker:
             outcome = _parse_gsf_outcome(raw)
             async with tool_lock:
                 if isinstance(outcome, GSFToolError):
-                    attempts.append(_GSFQueryAttempt(question=question, outcome=outcome))
+                    attempts.append(_GSFQueryAttempt(question=question, outcome=outcome, blocks_followup=True))
                     return outcome.model_dump_json(exclude_none=True)
                 attempt = _GSFQueryAttempt(question=question, outcome=outcome)
                 attempts.append(attempt)
@@ -339,6 +425,7 @@ class StructuredAnalysisWorker:
         tool_lock: asyncio.Lock,
     ):
         python_calls = 0
+        code_keys: set[str] = set()
 
         @tool("execute_python", args_schema=_ExecutePythonInput)
         async def execute_python(code: str) -> str:
@@ -350,6 +437,16 @@ class StructuredAnalysisWorker:
                     raise StructuredAnalysisError(f"execute_python allows at most {self._max_python_calls} calls")
                 if not any(isinstance(attempt.outcome, TextToSQLResponse) for attempt in attempts):
                     raise StructuredAnalysisError("execute_python is unavailable until one GSF query succeeds")
+                code_key = code.strip()
+                if code_key in code_keys:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "code": "repeated_python",
+                            "message": "Exact repeated Python code is not allowed. Stop and report the limitation.",
+                        }
+                    )
+                code_keys.add(code_key)
                 attempt_snapshot = tuple(attempts)
             if len(code) > self._max_code_chars:
                 raise StructuredAnalysisError(f"Python code exceeds {self._max_code_chars} characters")
@@ -372,11 +469,17 @@ class StructuredAnalysisWorker:
                 timeout=self._execute_timeout_seconds,
             )
             output, worker_truncated = _truncate_text(response.output, self._max_output_chars)
+            output_is_empty = not output.strip()
+            succeeded = response.exit_code == 0 and not output_is_empty
             payload = {
+                "status": "success" if succeeded else "error",
+                "code": None if succeeded else "empty_output" if output_is_empty else "execution_failed",
                 "exit_code": response.exit_code,
                 "output": output,
                 "truncated": bool(response.truncated or worker_truncated),
             }
+            if output_is_empty:
+                payload["message"] = "Python produced no analytical output. Print the requested result explicitly."
             _upload_or_raise(provider, [(output_path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))])
             return json.dumps({**payload, "code_artifact": script_path, "output_artifact": output_path})
 
@@ -587,6 +690,43 @@ def _model_projection(response: TextToSQLResponse, max_rows: int) -> dict[str, A
         "assumptions": response.assumptions or [],
         "citation_key": response.citation_key,
     }
+
+
+def _append_complete_rows_when_bounded(content: str, attempts: Sequence[_GSFQueryAttempt]) -> str:
+    """Preserve one small complete result when the model reduced it to a summary."""
+    successful = [attempt.outcome for attempt in attempts if isinstance(attempt.outcome, TextToSQLResponse)]
+    if len(successful) != 1:
+        return content
+    response = successful[0]
+    if response.truncated or not response.rows or _content_covers_rows(content, response.rows):
+        return content
+
+    column_names = [column.name for column in response.columns]
+    if not column_names and isinstance(response.rows[0], Mapping):
+        column_names = list(response.rows[0])
+    if column_names and all(isinstance(row, Mapping) for row in response.rows):
+        projected_rows = [[row.get(name) for name in column_names] for row in response.rows]
+    else:
+        projected_rows = response.rows
+    rows_json = json.dumps(projected_rows, ensure_ascii=False, separators=(",", ":"), default=str)
+    header = json.dumps(column_names, ensure_ascii=False, separators=(",", ":"))
+    addition = f"\n\nExact GSF result rows (column order {header}):\n{rows_json}"
+    if len(content) + len(addition) > STRUCTURED_CONCLUSION_MAX_CHARS:
+        return content
+    return f"{content}{addition}"
+
+
+def _content_covers_rows(content: str, rows: Sequence[Any]) -> bool:
+    values: list[str] = []
+    for row in rows:
+        items = row.values() if isinstance(row, Mapping) else row if isinstance(row, Sequence) else (row,)
+        for value in items:
+            if value is None:
+                continue
+            text = str(value)
+            if text:
+                values.append(text)
+    return bool(values) and all(value in content for value in values)
 
 
 def _sandbox_name(workflow_run_id: str, task_id: str) -> str:

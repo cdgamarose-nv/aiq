@@ -42,6 +42,7 @@ from aiq_agent.agents.deep_researcher.sandbox import verify_capabilities
 from aiq_agent.agents.deep_researcher.sandbox.config import job_scoped_artifact_dir
 from aiq_agent.agents.deep_researcher.sandbox.config import job_scoped_workdir
 from aiq_agent.agents.deep_researcher.sandbox.providers.modal import ModalSandboxProvider
+from aiq_agent.agents.deep_researcher.sandbox.providers.modal import _ModalSandbox
 
 
 class _RecoverableError(Exception):
@@ -143,6 +144,44 @@ def test_modal_provider_hard_terminates_wrapped_sdk_sandbox() -> None:
     provider._terminate_session(SimpleNamespace(_sandbox=wrapped))
 
     assert calls == [True]
+
+
+def test_modal_provider_attaches_after_typed_create_conflict(monkeypatch: Any) -> None:
+    import modal
+
+    app = object()
+    image = MagicMock()
+    existing = object()
+    create = MagicMock(side_effect=modal.exception.ConflictError("same-name sandbox exists"))
+    from_name = MagicMock(return_value=existing)
+
+    monkeypatch.setattr(modal.App, "lookup", MagicMock(return_value=app))
+    monkeypatch.setattr(modal.Image, "from_registry", MagicMock(return_value=image))
+    monkeypatch.setattr(modal.Sandbox, "create", create)
+    monkeypatch.setattr(modal.Sandbox, "from_name", from_name)
+
+    provider = ModalSandboxProvider(SandboxConfig(provider="modal", network={"mode": "blocked"}), "run-task-123")
+
+    session = provider._create_session()
+    assert isinstance(session, _ModalSandbox)
+    assert session._sandbox is existing
+    create.assert_called_once()
+    from_name.assert_called_once_with(provider.config.providers.modal.app_name, provider.sandbox_name)
+
+
+def test_modal_adapter_uses_current_filesystem_api() -> None:
+    filesystem = MagicMock()
+    filesystem.read_bytes.return_value = b"complete response"
+    sandbox = SimpleNamespace(object_id="sb-123", filesystem=filesystem)
+    session = _ModalSandbox(sandbox)
+
+    upload = session.upload_files([("/workspace/input.json", b"payload")])
+    download = session.download_files(["/workspace/output.json"])
+
+    filesystem.write_bytes.assert_called_once_with(b"payload", "/workspace/input.json")
+    filesystem.read_bytes.assert_called_once_with("/workspace/output.json")
+    assert upload[0].error is None
+    assert download[0].content == b"complete response"
 
 
 class TestSandboxConfig:

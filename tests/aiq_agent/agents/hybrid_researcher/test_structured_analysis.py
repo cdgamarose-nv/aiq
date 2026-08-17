@@ -15,6 +15,7 @@ from gsf.errors import GSFToolError
 from gsf.models import TextToSQLResponse
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage
+from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
 from aiq_agent.agents.chat_researcher.models import CatalogCandidate
@@ -130,6 +131,8 @@ async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
     assert "private-catalog-id" not in str(user_context)
     assert [item.name for item in captured["tools"]] == ["query_gsf", "execute_python"]
     assert "within 8000 characters" in captured["system_prompt"]
+    assert '"successful_gsf_responses"' in captured["system_prompt"]
+    assert "rows_projection_truncated" in captured["system_prompt"]
     assert sandbox_names == []
     assert provider.upload_calls == []
     assert not provider.closed and not provider.terminated
@@ -179,7 +182,7 @@ async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
     assert sandbox_calls == 0
     assert provider.upload_calls == []
     assert sentinel in str(captured["tool_result"]["rows"])
-    assert len(captured["tool_result"]["rows"]) == 25
+    assert len(captured["tool_result"]["rows"]) == 100
     assert captured["tool_result"]["rows_projection_truncated"] is True
     terminal_json = result.model_dump_json()
     assert sentinel not in terminal_json
@@ -187,6 +190,43 @@ async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
     assert "authorized_result" not in terminal_json
     assert "manifest" not in terminal_json
     assert result.gsf_provenance[0].returned_row_count == 1_000
+
+
+async def test_small_complete_rows_are_preserved_when_model_only_summarizes(monkeypatch):
+    captured: dict[str, Any] = {}
+    response = TextToSQLResponse(
+        sql="SELECT ticker, market_date, volume FROM authorized_result",
+        rows=[
+            {"ticker": "ETH", "market_date": "06-05-2021", "volume": "87.73K"},
+            {"ticker": "BTC", "market_date": "06-05-2021", "volume": "75.20K"},
+        ],
+    )
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Return daily volume records"})
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "Two daily volume records were returned.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=response),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+    assert "Exact GSF result rows" in result.conclusion
+    assert '["ETH","06-05-2021","87.73K"]' in result.conclusion
+    assert '["BTC","06-05-2021","75.20K"]' in result.conclusion
+    assert "authorized_result" not in result.conclusion
 
 
 async def test_gsf_errors_are_retained_and_do_not_disappear(monkeypatch):
@@ -337,6 +377,7 @@ async def test_python_requires_success_then_reads_complete_manifest(monkeypatch)
     assert provider.events[0][1].startswith("mkdir -p ")
     python_command = next(command for command, _timeout in provider.execute_calls if "python3" in command)
     assert "AIQ_GSF_MANIFEST=" in python_command
+    assert captured["python"]["status"] == "success"
     assert captured["python"]["output"] == "derived result"
     assert "print('derived')" not in result.model_dump_json()
     assert "derived result" not in result.model_dump_json()
@@ -501,6 +542,7 @@ async def test_exact_repeated_questions_are_rejected_and_retained(monkeypatch):
             await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
             repeated = await captured["tools"][0].ainvoke({"question": "  revenue BY quarter  "})
             assert json.loads(repeated)["code"] == "invalid_request"
+            await captured["tools"][0].ainvoke({"question": "Revenue by fiscal month"})
             return {
                 "structured_response": {
                     "sufficiency": "limited",
@@ -519,38 +561,252 @@ async def test_exact_repeated_questions_are_rejected_and_retained(monkeypatch):
         gsf_invoke=invoke,
         sandbox_factory=lambda _job: _Provider(),
     ).run(_request())
-    assert calls == 1
-    assert len(result.gsf_provenance) == 2
+    assert calls == 2
+    assert len(result.gsf_provenance) == 3
     assert isinstance(result.gsf_provenance[1], GSFQueryError)
+    assert isinstance(result.gsf_provenance[2], GSFQuerySuccess)
 
 
-async def test_multiple_gsf_calls_in_one_model_turn_are_all_rejected():
+async def test_multiple_gsf_calls_in_one_model_turn_keep_first_unseen_call():
+    middleware = _SequentialGSFMiddleware()
+    first_response = ModelResponse(
+        result=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "query_gsf", "args": {"question": "One"}, "id": "call-1", "type": "tool_call"},
+                ],
+            )
+        ]
+    )
+    request = SimpleNamespace(messages=[], tools=[], override=lambda **_kwargs: request)
+    await middleware.awrap_model_call(request, lambda _request: asyncio.sleep(0, result=first_response))
+    second_response = ModelResponse(
+        result=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "query_gsf", "args": {"question": "One"}, "id": "call-2", "type": "tool_call"},
+                    {"name": "query_gsf", "args": {"question": "Two"}, "id": "call-3", "type": "tool_call"},
+                ],
+            )
+        ]
+    )
+    filtered = await middleware.awrap_model_call(request, lambda _request: asyncio.sleep(0, result=second_response))
+    assert filtered.result[0].tool_calls == [
+        {"name": "query_gsf", "args": {"question": "Two"}, "id": "call-3", "type": "tool_call"}
+    ]
+
+
+async def test_data_tool_discards_same_turn_structured_conclusion():
     middleware = _SequentialGSFMiddleware()
     response = ModelResponse(
         result=[
             AIMessage(
                 content="",
                 tool_calls=[
-                    {"name": "query_gsf", "args": {"question": "One"}, "id": "call-1", "type": "tool_call"},
-                    {"name": "query_gsf", "args": {"question": "Two"}, "id": "call-2", "type": "tool_call"},
+                    {"name": "query_gsf", "args": {"question": "Revenue"}, "id": "call-1", "type": "tool_call"},
+                    {
+                        "name": "_StructuredConclusion",
+                        "args": {"sufficiency": "sufficient", "content": "Guessed.", "limitations": []},
+                        "id": "call-2",
+                        "type": "tool_call",
+                    },
                 ],
+            ),
+            ToolMessage(
+                content='{"sufficiency":"sufficient","content":"Guessed.","limitations":[]}',
+                tool_call_id="call-2",
+                name="_StructuredConclusion",
+            ),
+        ],
+        structured_response={"sufficiency": "sufficient", "content": "Guessed.", "limitations": []},
+    )
+    request = SimpleNamespace(messages=[], tools=[], override=lambda **_kwargs: request)
+    filtered = await middleware.awrap_model_call(request, lambda _request: asyncio.sleep(0, result=response))
+    assert [call["name"] for call in filtered.result[0].tool_calls] == ["query_gsf"]
+    assert len(filtered.result) == 1
+    assert filtered.structured_response is None
+
+
+async def test_error_observation_removes_data_tools_from_next_model_call():
+    middleware = _SequentialGSFMiddleware()
+    request = SimpleNamespace(
+        messages=[
+            ToolMessage(
+                content='{"status":"error","code":"invalid_request"}',
+                tool_call_id="call-1",
+                name="query_gsf",
             )
-        ]
+        ],
+        tools=[{"name": "query_gsf"}, {"name": "execute_python"}, {"name": "_StructuredConclusion"}],
     )
-    await middleware.awrap_model_call(SimpleNamespace(), lambda _request: asyncio.sleep(0, result=response))
-    handler_called = False
+    captured = {}
 
-    async def handler(_request):
-        nonlocal handler_called
-        handler_called = True
+    def override(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(messages=request.messages, tools=kwargs["tools"])
 
-    message = await middleware.awrap_tool_call(
-        SimpleNamespace(tool_call={"name": "query_gsf", "id": "call-1"}),
-        handler,
+    request.override = override
+
+    async def handler(updated):
+        assert [tool["name"] for tool in updated.tools] == ["_StructuredConclusion"]
+        return ModelResponse(result=[AIMessage(content="done")])
+
+    await middleware.awrap_model_call(request, handler)
+    assert [tool["name"] for tool in captured["tools"]] == ["_StructuredConclusion"]
+    assert captured["tool_choice"] == "_StructuredConclusion"
+
+
+async def test_complete_but_projected_result_preserves_react_tool_choice():
+    middleware = _SequentialGSFMiddleware()
+    request = SimpleNamespace(
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "status": "success",
+                        "returned_row_count": 76,
+                        "rows_projection_truncated": True,
+                        "result_truncated": False,
+                    }
+                ),
+                tool_call_id="call-1",
+                name="query_gsf",
+            )
+        ],
+        tools=[{"name": "query_gsf"}, {"name": "execute_python"}, {"name": "_StructuredConclusion"}],
     )
-    assert not handler_called
-    assert message.status == "error"
-    assert "Multiple query_gsf calls" in message.content
+
+    async def handler(updated):
+        assert [tool["name"] for tool in updated.tools] == ["query_gsf", "execute_python", "_StructuredConclusion"]
+        return ModelResponse(result=[AIMessage(content="done")])
+
+    await middleware.awrap_model_call(request, handler)
+
+
+async def test_successful_python_forces_structured_conclusion_next():
+    middleware = _SequentialGSFMiddleware()
+    request = SimpleNamespace(
+        messages=[
+            ToolMessage(
+                content='{"status":"success","exit_code":0,"output":"derived"}',
+                tool_call_id="call-1",
+                name="execute_python",
+            )
+        ],
+        tools=[{"name": "query_gsf"}, {"name": "execute_python"}, {"name": "_StructuredConclusion"}],
+    )
+    captured = {}
+
+    def override(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(messages=request.messages, tools=kwargs["tools"])
+
+    request.override = override
+
+    await middleware.awrap_model_call(
+        request,
+        lambda updated: asyncio.sleep(0, result=ModelResponse(result=[AIMessage(content="done")])),
+    )
+    assert [tool["name"] for tool in captured["tools"]] == ["_StructuredConclusion"]
+    assert captured["tool_choice"] == "_StructuredConclusion"
+
+
+async def test_failed_python_forces_materially_corrected_python_next():
+    middleware = _SequentialGSFMiddleware()
+    request = SimpleNamespace(
+        messages=[
+            ToolMessage(
+                content='{"status":"error","code":"execution_failed","exit_code":1,"output":"SyntaxError"}',
+                tool_call_id="call-1",
+                name="execute_python",
+            )
+        ],
+        tools=[{"name": "query_gsf"}, {"name": "execute_python"}, {"name": "_StructuredConclusion"}],
+    )
+    captured = {}
+
+    def override(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(messages=request.messages, tools=kwargs["tools"])
+
+    request.override = override
+
+    await middleware.awrap_model_call(
+        request,
+        lambda updated: asyncio.sleep(0, result=ModelResponse(result=[AIMessage(content="done")])),
+    )
+    assert [tool["name"] for tool in captured["tools"]] == ["execute_python", "_StructuredConclusion"]
+    assert captured["tool_choice"] == "execute_python"
+
+
+async def test_exact_repeated_python_is_rejected_without_execution(monkeypatch):
+    provider = _Provider()
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            first = json.loads(await captured["tools"][1].ainvoke({"code": "print('derived')"}))
+            repeated = json.loads(await captured["tools"][1].ainvoke({"code": "  print('derived')  "}))
+            assert first["status"] == "success"
+            assert repeated["code"] == "repeated_python"
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "The first calculation established the result.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+    ).run(_request())
+    python_executes = [command for command, _timeout in provider.execute_calls if "python3" in command]
+    assert len(python_executes) == 1
+
+
+async def test_empty_python_output_requires_a_corrected_call(monkeypatch):
+    provider = _Provider()
+    provider.execute = lambda command, *, timeout=None: (
+        provider.execute_calls.append((command, timeout)) or ExecuteResponse(output="  \n", exit_code=0)
+    )
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            result = json.loads(await captured["tools"][1].ainvoke({"code": "import pandas as pd"}))
+            assert result["status"] == "error"
+            assert result["code"] == "empty_output"
+            assert "Print the requested result" in result["message"]
+            return {
+                "structured_response": {
+                    "sufficiency": "limited",
+                    "content": "The calculation produced no inspectable output.",
+                    "limitations": ["Python did not print an analytical result."],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+    ).run(_request())
+    assert len([command for command, _timeout in provider.execute_calls if "python3" in command]) == 1
 
 
 async def test_total_timeout_terminates_sandbox(monkeypatch):

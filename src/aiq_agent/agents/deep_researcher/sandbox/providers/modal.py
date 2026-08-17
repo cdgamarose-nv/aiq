@@ -21,7 +21,11 @@ import logging
 import re
 import shlex
 from typing import TYPE_CHECKING
+from typing import Any
 
+from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import FileDownloadResponse
+from deepagents.backends.protocol import FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 
 from ..base import SandboxProvider
@@ -71,6 +75,72 @@ def _is_modal_not_found_error(exc: Exception) -> bool:
         return exc.__class__.__name__ == "NotFoundError" and exc.__class__.__module__.startswith("modal")
 
 
+class _ModalSandbox(BaseSandbox):
+    """Deep Agents adapter using Modal's supported filesystem namespace."""
+
+    def __init__(self, sandbox: Any) -> None:
+        self._sandbox = sandbox
+        self._default_timeout = 30 * 60
+
+    @property
+    def id(self) -> str:
+        return self._sandbox.object_id
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        process = self._sandbox.exec("bash", "-c", command, timeout=effective_timeout)
+        process.wait()
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
+        output = stdout or ""
+        if stderr:
+            output += f"\n{stderr}" if output else stderr
+        return ExecuteResponse(output=output, exit_code=process.returncode, truncated=False)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return [self._upload_file(path, content) for path, content in files]
+
+    def _upload_file(self, path: str, content: bytes) -> FileUploadResponse:
+        if not path.startswith("/"):
+            return FileUploadResponse(path=path, error="invalid_path")
+        try:
+            self._sandbox.filesystem.write_bytes(content, path)
+        except Exception as exc:  # Modal exposes provider-specific filesystem exception classes
+            return FileUploadResponse(path=path, error=_modal_file_error(exc))
+        return FileUploadResponse(path=path)
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        return [self._download_file(path) for path in paths]
+
+    def _download_file(self, path: str) -> FileDownloadResponse:
+        if not path.startswith("/"):
+            return FileDownloadResponse(path=path, error="invalid_path")
+        try:
+            content = self._sandbox.filesystem.read_bytes(path)
+        except Exception as exc:  # Modal exposes provider-specific filesystem exception classes
+            return FileDownloadResponse(path=path, error=_modal_file_error(exc))
+        return FileDownloadResponse(path=path, content=content)
+
+
+def _modal_file_error(exc: Exception) -> str:
+    """Map Modal filesystem failures to the bounded Deep Agents file contract."""
+    try:
+        import modal
+
+        if isinstance(exc, modal.exception.SandboxFilesystemPermissionError):
+            return "permission_denied"
+        if isinstance(exc, modal.exception.SandboxFilesystemIsADirectoryError):
+            return "is_directory"
+        if isinstance(
+            exc,
+            (modal.exception.SandboxFilesystemNotFoundError, modal.exception.SandboxFilesystemNotADirectoryError),
+        ):
+            return "file_not_found"
+    except ImportError:
+        pass
+    raise exc
+
+
 class ModalSandboxProvider(SandboxProvider):
     """Job-scoped Modal backend.
 
@@ -114,12 +184,11 @@ class ModalSandboxProvider(SandboxProvider):
         Create-first semantics: unlike the legacy backend, this does NOT attach to
         an existing sandbox by name as its primary path (which risked binding a new
         job to a prior job's workspace). It creates fresh; only an
-        ``AlreadyExistsError`` (this job's own sandbox from earlier in the run, since
-        the name is the unique job id) falls back to attach.
+        a typed same-name conflict (this job's own sandbox from earlier in the run,
+        since the name is the unique job id) falls back to attach.
         """
         try:
             import modal
-            from langchain_modal import ModalSandbox
         except ImportError as exc:
             raise ImportError(_IMPORT_HINT) from exc
 
@@ -159,10 +228,10 @@ class ModalSandboxProvider(SandboxProvider):
                 cfg.workdir,
                 cfg.timeout,
             )
-        except modal.exception.AlreadyExistsError:
+        except (modal.exception.AlreadyExistsError, modal.exception.ConflictError):
             sandbox = modal.Sandbox.from_name(modal_cfg.app_name, self.sandbox_name)
-            logger.info("Modal sandbox attached to this job's existing instance: name=%s", self.sandbox_name)
-        return ModalSandbox(sandbox=sandbox)
+            logger.info("Modal sandbox attached after a same-name create conflict: name=%s", self.sandbox_name)
+        return _ModalSandbox(sandbox)
 
     def _terminate_session(self, session: BaseSandbox | None) -> None:
         """Hard-stop the Modal sandbox wrapped by ``langchain-modal``."""

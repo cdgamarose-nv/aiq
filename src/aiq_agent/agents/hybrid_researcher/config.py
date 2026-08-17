@@ -56,7 +56,7 @@ class StructuredAnalysisWorkerConfig(FunctionBaseConfig, name="structured_analys
     python_execute_timeout_seconds: int = Field(default=60, ge=1)
     max_code_chars: int = Field(default=40_000, ge=1)
     max_output_chars: int = Field(default=40_000, ge=1)
-    model_result_rows: int = Field(default=25, ge=1)
+    model_result_rows: int = Field(default=100, ge=1)
     verbose: bool = False
 
     @field_validator("sandbox", mode="before")
