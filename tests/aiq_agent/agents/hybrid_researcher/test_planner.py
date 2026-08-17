@@ -11,8 +11,10 @@ import pytest
 
 from aiq_agent.agents.chat_researcher.models import CatalogCandidate
 from aiq_agent.agents.chat_researcher.models import CatalogRoutingResponse
+from aiq_agent.agents.hybrid_researcher.models import BoundedTableEvidence
 from aiq_agent.agents.hybrid_researcher.models import ContinuationDecision
 from aiq_agent.agents.hybrid_researcher.models import GSFQuerySuccess
+from aiq_agent.agents.hybrid_researcher.models import GSFResultColumnSummary
 from aiq_agent.agents.hybrid_researcher.models import HybridResearchState
 from aiq_agent.agents.hybrid_researcher.models import HybridTask
 from aiq_agent.agents.hybrid_researcher.models import HybridTaskPlan
@@ -29,19 +31,26 @@ class _Runnable:
         self.responses = iter(responses)
         self.calls = []
 
-    async def ainvoke(self, messages, config=None):
-        self.calls.append((messages, config))
-        return next(self.responses)
+    async def ainvoke(self, state, config=None):
+        self.calls.append((state, config))
+        return {"structured_response": next(self.responses)}
 
 
 class _Model:
     def __init__(self, responses: list[Any]) -> None:
         self.runnable = _Runnable(responses)
         self.schema = None
+        self.response_format = None
 
-    def with_structured_output(self, schema):
-        self.schema = schema
-        return self.runnable
+
+@pytest.fixture(autouse=True)
+def _tool_call_planner_agent(monkeypatch):
+    def fake_create_agent(*, model, response_format, **_kwargs):
+        model.schema = response_format.schema
+        model.response_format = response_format
+        return model.runnable
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.planner.create_agent", fake_create_agent)
 
 
 def _state(**overrides: Any) -> HybridResearchState:
@@ -85,6 +94,7 @@ async def test_initial_planner_allows_parallel_multiple_kinds_and_known_dependen
     assert "request_id" not in serialized
     assert context["catalog_context"]["candidates"][0]["term"] == "Revenue"
     assert model.schema is HybridTaskPlan
+    assert model.response_format.handle_errors is False
 
 
 async def test_single_task_keeps_clarified_objective_without_procedural_drift():
@@ -195,6 +205,36 @@ def test_continuation_receives_compact_terminal_structured_evidence():
     assert projection["gsf_provenance"][0]["returned_row_count"] == 1_000
     assert "rows" not in str(projection)
     assert "artifact" not in str(projection)
+
+
+def test_continuation_receives_exact_rows_only_through_bounded_table_contract():
+    plan = HybridTaskPlan(
+        objective="Find the largest decline and research its period.",
+        tasks=(HybridTask(id="discover", kind="structured_analysis", objective="Discover entities."),),
+    )
+    run = TaskRun(
+        task_id="discover",
+        kind="structured_analysis",
+        status="succeeded",
+        result=StructuredAnalysisResult(
+            sufficiency="sufficient",
+            conclusion="Two entities were returned.",
+            gsf_provenance=(),
+            table_evidence=BoundedTableEvidence(
+                citation_key="GSF request entities-1",
+                columns=(GSFResultColumnSummary(name="entity"),),
+                rows=({"entity": "Alpha"}, {"entity": "Beta"}),
+                returned_row_count=2,
+            ),
+        ),
+    )
+    context = ContinuationPlanner(_Model([])).prompt_context(
+        _state(plan=plan, task_runs=[run]),
+        max_plan_extensions=2,
+    )
+    projection = context["task_ledger"][0]["run"]
+    assert projection["table_evidence"]["rows"] == [{"entity": "Alpha"}, {"entity": "Beta"}]
+    assert "sql" not in str(projection)
 
 
 async def test_continuation_rejects_mutating_or_duplicate_existing_task():

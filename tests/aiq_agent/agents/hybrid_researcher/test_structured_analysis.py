@@ -13,8 +13,10 @@ from deepagents.backends.protocol import ExecuteResponse
 from gsf.errors import GSFErrorCode
 from gsf.errors import GSFToolError
 from gsf.models import TextToSQLResponse
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
@@ -223,10 +225,146 @@ async def test_small_complete_rows_are_preserved_when_model_only_summarizes(monk
         gsf_invoke=lambda _request: asyncio.sleep(0, result=response),
         sandbox_factory=lambda _name: _Provider(),
     ).run(_request())
-    assert "Exact GSF result rows" in result.conclusion
-    assert '["ETH","06-05-2021","87.73K"]' in result.conclusion
-    assert '["BTC","06-05-2021","75.20K"]' in result.conclusion
+    assert result.table_evidence is not None
+    assert result.table_evidence.rows == (
+        {"ticker": "ETH", "market_date": "06-05-2021", "volume": "87.73K"},
+        {"ticker": "BTC", "market_date": "06-05-2021", "volume": "75.20K"},
+    )
     assert "authorized_result" not in result.conclusion
+
+
+async def test_invalid_terminal_output_recovers_complete_bounded_gsf_rows(monkeypatch):
+    captured: dict[str, Any] = {}
+    response = TextToSQLResponse(
+        sql="SELECT category, item, loss_rate FROM authorized_result",
+        rows=[
+            {"category": "Leafy", "item": "A", "loss_rate": 4.2},
+            {"category": "Leafy", "item": "B", "loss_rate": 3.8},
+        ],
+    )
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Top loss-rate items by category"})
+            return {"structured_response": None}
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=response),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert result.table_evidence is not None
+    assert result.table_evidence.rows == tuple(response.rows)
+    assert "did not produce a valid" in result.limitations[0]
+
+
+async def test_latest_complete_gsf_table_is_preserved_after_corrected_followup(monkeypatch):
+    captured: dict[str, Any] = {}
+    responses = iter(
+        [
+            TextToSQLResponse(sql="SELECT item, value FROM detail", rows=[{"item": "A", "value": 1}]),
+            TextToSQLResponse(
+                sql="SELECT category, total FROM aggregate",
+                rows=[{"category": "Leafy", "total": 10}, {"category": "Root", "total": 20}],
+            ),
+        ]
+    )
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Item detail"})
+            await captured["tools"][0].ainvoke({"question": "Category totals"})
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "Two category totals were returned.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=next(responses)),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.table_evidence is not None
+    assert result.table_evidence.rows == (
+        {"category": "Leafy", "total": 10},
+        {"category": "Root", "total": 20},
+    )
+    assert result.table_evidence.citation_key == result.gsf_provenance[-1].citation_key
+
+
+async def test_invalid_terminal_output_does_not_leak_large_gsf_rows(monkeypatch):
+    captured: dict[str, Any] = {}
+    sentinel = "large-private-row"
+    response = TextToSQLResponse(
+        sql="SELECT value FROM authorized_result",
+        rows=[{"value": f"{sentinel}-{index}-" + "x" * 250} for index in range(1_000)],
+    )
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Return all values"})
+            return {"structured_response": None}
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=response),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert result.table_evidence is None
+    assert sentinel not in result.model_dump_json()
+
+
+async def test_tool_limit_exhaustion_recovers_prior_gsf_evidence(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            raise ToolCallLimitExceededError(
+                thread_count=1,
+                run_count=4,
+                thread_limit=None,
+                run_limit=4,
+                tool_name="query_gsf",
+            )
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert result.table_evidence is not None
+    assert result.table_evidence.rows == tuple(_response().rows)
 
 
 async def test_gsf_errors_are_retained_and_do_not_disappear(monkeypatch):
@@ -567,6 +705,31 @@ async def test_exact_repeated_questions_are_rejected_and_retained(monkeypatch):
     assert isinstance(result.gsf_provenance[2], GSFQuerySuccess)
 
 
+async def test_first_model_step_dispatches_task_objective_to_gsf_without_llm_call():
+    middleware = _SequentialGSFMiddleware(initial_question="Final monthly aggregate")
+    request = SimpleNamespace(
+        messages=[HumanMessage(content="runtime context")],
+        tools=[{"name": "query_gsf"}, {"name": "execute_python"}, {"name": "_StructuredConclusion"}],
+    )
+    handler_called = False
+
+    async def handler(_request):
+        nonlocal handler_called
+        handler_called = True
+        return ModelResponse(result=[AIMessage(content="unexpected")])
+
+    response = await middleware.awrap_model_call(request, handler)
+    assert handler_called is False
+    assert response.result[0].tool_calls == [
+        {
+            "name": "query_gsf",
+            "args": {"question": "Final monthly aggregate"},
+            "id": "call-initial-query-gsf",
+            "type": "tool_call",
+        }
+    ]
+
+
 async def test_multiple_gsf_calls_in_one_model_turn_keep_first_unseen_call():
     middleware = _SequentialGSFMiddleware()
     first_response = ModelResponse(
@@ -807,6 +970,43 @@ async def test_empty_python_output_requires_a_corrected_call(monkeypatch):
         sandbox_factory=lambda _name: provider,
     ).run(_request())
     assert len([command for command, _timeout in provider.execute_calls if "python3" in command]) == 1
+
+
+async def test_sufficient_conclusion_is_rejected_when_all_python_attempts_fail(monkeypatch):
+    provider = _Provider()
+    provider.execute = lambda command, *, timeout=None: (
+        provider.execute_calls.append((command, timeout)) or ExecuteResponse(output="", exit_code=0)
+    )
+    captured = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Per-customer balances"})
+            python_result = json.loads(await captured["tools"][1].ainvoke({"code": "import pandas as pd"}))
+            assert python_result["code"] == "empty_output"
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "Python calculated an average of 185.94.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: provider,
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert "185.94" not in result.conclusion
+    assert "required Python work did not succeed" in result.limitations[0]
+    assert any("No Python execution completed successfully" in limitation for limitation in result.limitations)
 
 
 async def test_total_timeout_terminates_sandbox(monkeypatch):

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import operator
 import uuid
 from datetime import datetime
@@ -31,8 +32,11 @@ ContinuationAction = Literal["finish", "append", "fail"]
 Sufficiency = Literal["sufficient", "limited", "insufficient"]
 
 STRUCTURED_CONCLUSION_MAX_CHARS = 8_000
+STRUCTURED_EVIDENCE_MAX_CHARS = 10_000
 STRUCTURED_LIMITATION_MAX_CHARS = 2_000
 STRUCTURED_MAX_LIMITATIONS = 20
+STRUCTURED_TABLE_MAX_COLUMNS = 50
+STRUCTURED_TABLE_MAX_ROWS = 100
 GSF_QUESTION_MAX_CHARS = 4_096
 GSF_PROVENANCE_MAX_COLUMNS = 12
 GSF_PROVENANCE_MAX_METADATA_ITEMS = 5
@@ -242,6 +246,24 @@ class GSFQueryError(_StrictModel):
 GSFQueryProvenance = Annotated[GSFQuerySuccess | GSFQueryError, Field(discriminator="status")]
 
 
+class BoundedTableEvidence(_StrictModel):
+    """One complete non-truncated GSF result small enough for downstream synthesis."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    citation_key: GSFProvenanceIdentifierText
+    columns: tuple[GSFResultColumnSummary, ...] = Field(min_length=1, max_length=STRUCTURED_TABLE_MAX_COLUMNS)
+    rows: tuple[dict[str, JsonValue], ...] = Field(min_length=1, max_length=STRUCTURED_TABLE_MAX_ROWS)
+    returned_row_count: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def require_complete_row_count(self) -> BoundedTableEvidence:
+        """This contract represents all rows from one complete GSF response."""
+        if self.returned_row_count != len(self.rows):
+            raise ValueError("bounded table evidence must contain every returned row")
+        return self
+
+
 class StructuredAnalysisResult(_StrictModel):
     """Typed conclusion and retained provenance from one structured trajectory."""
 
@@ -252,6 +274,25 @@ class StructuredAnalysisResult(_StrictModel):
     conclusion: StructuredConclusionText
     gsf_provenance: tuple[GSFQueryProvenance, ...] = Field(max_length=4)
     limitations: tuple[StructuredLimitationText, ...] = Field(default=(), max_length=STRUCTURED_MAX_LIMITATIONS)
+    table_evidence: BoundedTableEvidence | None = None
+
+    @model_validator(mode="after")
+    def bound_downstream_evidence(self) -> StructuredAnalysisResult:
+        """Bound the combined answer-ready conclusion and optional exact table."""
+        table_chars = 0
+        if self.table_evidence is not None:
+            table_chars = len(
+                json.dumps(
+                    self.table_evidence.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        if len(self.conclusion) + table_chars > STRUCTURED_EVIDENCE_MAX_CHARS:
+            raise ValueError(
+                f"structured conclusion and table evidence exceed {STRUCTURED_EVIDENCE_MAX_CHARS} characters"
+            )
+        return self
 
 
 TaskResult = Annotated[
@@ -367,6 +408,7 @@ class HybridResearchState(_StrictModel):
 
 
 __all__ = [
+    "BoundedTableEvidence",
     "ClarificationDecision",
     "ClarificationTurn",
     "ContinuationAction",
@@ -382,6 +424,9 @@ __all__ = [
     "NodeId",
     "NonEmptyText",
     "STRUCTURED_CONCLUSION_MAX_CHARS",
+    "STRUCTURED_EVIDENCE_MAX_CHARS",
+    "STRUCTURED_TABLE_MAX_COLUMNS",
+    "STRUCTURED_TABLE_MAX_ROWS",
     "ResearchTaskResult",
     "ResearchWorkerRequest",
     "StructuredAnalysisRequest",

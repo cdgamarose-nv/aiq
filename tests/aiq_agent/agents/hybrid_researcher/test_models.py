@@ -12,7 +12,9 @@ from pydantic import ValidationError
 
 from aiq_agent.agents.chat_researcher.models import CatalogCandidate
 from aiq_agent.agents.chat_researcher.models import CatalogRoutingResponse
+from aiq_agent.agents.hybrid_researcher.models import BoundedTableEvidence
 from aiq_agent.agents.hybrid_researcher.models import ContinuationDecision
+from aiq_agent.agents.hybrid_researcher.models import GSFResultColumnSummary
 from aiq_agent.agents.hybrid_researcher.models import HybridResearchState
 from aiq_agent.agents.hybrid_researcher.models import HybridTask
 from aiq_agent.agents.hybrid_researcher.models import HybridTaskPlan
@@ -66,6 +68,41 @@ def test_task_run_and_result_are_frozen_ledger_records():
         result.conclusion = "Mutated."
     with pytest.raises(ValidationError):
         run.status = "failed"
+
+
+def test_bounded_table_requires_complete_rows_and_shared_evidence_budget():
+    table = BoundedTableEvidence(
+        citation_key="GSF request revenue-1",
+        columns=(GSFResultColumnSummary(name="revenue"),),
+        rows=({"revenue": 100},),
+        returned_row_count=1,
+    )
+    result = StructuredAnalysisResult(
+        sufficiency="sufficient",
+        conclusion="Revenue was 100.",
+        gsf_provenance=(),
+        table_evidence=table,
+    )
+    assert result.table_evidence == table
+    with pytest.raises(ValidationError, match="every returned row"):
+        BoundedTableEvidence(
+            citation_key="GSF request revenue-1",
+            columns=(GSFResultColumnSummary(name="revenue"),),
+            rows=({"revenue": 100},),
+            returned_row_count=2,
+        )
+    with pytest.raises(ValidationError, match="exceed 10000 characters"):
+        StructuredAnalysisResult(
+            sufficiency="sufficient",
+            conclusion="x" * 8_000,
+            gsf_provenance=(),
+            table_evidence=BoundedTableEvidence(
+                citation_key="GSF request revenue-2",
+                columns=(GSFResultColumnSummary(name="value"),),
+                rows=({"value": "y" * 2_000},),
+                returned_row_count=1,
+            ),
+        )
 
 
 def test_continuation_payload_matches_action():

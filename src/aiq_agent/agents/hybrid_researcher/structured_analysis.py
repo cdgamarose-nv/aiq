@@ -29,7 +29,9 @@ from gsf.models import TextToSQLResponse
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain.agents.middleware.types import ModelResponse
+from langchain.agents.structured_output import StructuredOutputError
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -38,6 +40,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import ValidationError
 
 from aiq_agent.agents.deep_researcher.sandbox import SandboxProvider
 from aiq_agent.common import load_prompt
@@ -49,7 +52,11 @@ from .models import GSF_PROVENANCE_MAX_IDENTIFIER_CHARS
 from .models import GSF_PROVENANCE_MAX_METADATA_CHARS
 from .models import GSF_PROVENANCE_MAX_METADATA_ITEMS
 from .models import STRUCTURED_CONCLUSION_MAX_CHARS
+from .models import STRUCTURED_EVIDENCE_MAX_CHARS
 from .models import STRUCTURED_MAX_LIMITATIONS
+from .models import STRUCTURED_TABLE_MAX_COLUMNS
+from .models import STRUCTURED_TABLE_MAX_ROWS
+from .models import BoundedTableEvidence
 from .models import GSFQueryError
 from .models import GSFQueryProvenance
 from .models import GSFQuerySuccess
@@ -65,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _MANIFEST_FILENAME = "manifest.json"
+_GSF_QUESTION_MAX_CHARS = 4_096
 
 GSFInvoke = Callable[[Any], Awaitable[Any]]
 SandboxFactory = Callable[[str], SandboxProvider]
@@ -85,7 +93,7 @@ class StructuredAnalysisUploadError(StructuredAnalysisError):
 class _QueryGSFInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(min_length=1, max_length=4_096)
+    question: str = Field(min_length=1, max_length=_GSF_QUESTION_MAX_CHARS)
 
 
 class _ExecutePythonInput(BaseModel):
@@ -113,13 +121,40 @@ class _GSFQueryAttempt:
     blocks_followup: bool = False
 
 
+@dataclass(frozen=True)
+class _PythonExecutionAttempt:
+    """Worker-local Python status used only to validate terminal provenance."""
+
+    succeeded: bool
+    code: str | None
+
+
 class _SequentialGSFMiddleware(AgentMiddleware):
     """Serialize data tools and require every observation before a conclusion."""
 
-    def __init__(self) -> None:
-        self._seen_questions: set[str] = set()
+    def __init__(self, initial_question: str | None = None) -> None:
+        self._initial_question = initial_question
+        self._initial_dispatched = initial_question is None
+        self._seen_questions = {_normalize_question(initial_question)} if initial_question is not None else set()
 
     async def awrap_model_call(self, request, handler):
+        if not self._initial_dispatched:
+            self._initial_dispatched = True
+            return ModelResponse(
+                result=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "query_gsf",
+                                "args": {"question": self._initial_question},
+                                "id": "call-initial-query-gsf",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
         policy = _next_tool_policy(request.messages)
         if policy == "python":
             tools = [tool for tool in request.tools or [] if _tool_name(tool) != "query_gsf"]
@@ -283,6 +318,7 @@ class StructuredAnalysisWorker:
         """Execute one bounded trajectory and return only compact terminal evidence."""
         provider: SandboxProvider | None = None
         attempts: list[_GSFQueryAttempt] = []
+        python_attempts: list[_PythonExecutionAttempt] = []
         question_keys: set[str] = set()
         tool_lock = asyncio.Lock()
         effective_database = request.database_name or self._database_name
@@ -301,7 +337,13 @@ class StructuredAnalysisWorker:
                     tool_lock,
                     effective_database,
                 )
-                execute_python = self._build_python_tool(get_provider, request, attempts, tool_lock)
+                execute_python = self._build_python_tool(
+                    get_provider,
+                    request,
+                    attempts,
+                    python_attempts,
+                    tool_lock,
+                )
                 prompt = render_prompt_template(
                     self._prompt_template,
                     max_gsf_calls=self._max_gsf_calls,
@@ -313,7 +355,14 @@ class StructuredAnalysisWorker:
                     tools=[query_gsf, execute_python],
                     system_prompt=prompt,
                     middleware=[
-                        _SequentialGSFMiddleware(),
+                        _SequentialGSFMiddleware(
+                            initial_question=(
+                                request.task_objective
+                                if not request.dependency_results
+                                and len(request.task_objective) <= _GSF_QUESTION_MAX_CHARS
+                                else None
+                            )
+                        ),
                         ToolCallLimitMiddleware(
                             tool_name="query_gsf",
                             run_limit=self._max_gsf_calls,
@@ -330,19 +379,34 @@ class StructuredAnalysisWorker:
                 config: dict[str, Any] = {"run_name": "hybrid-structured-analysis-worker"}
                 if self._callbacks:
                     config["callbacks"] = self._callbacks
-                result = await agent.ainvoke(
-                    {"messages": [{"role": "user", "content": json.dumps(_request_context(request))}]},
-                    config=config,
-                )
-                structured = result.get("structured_response") if isinstance(result, Mapping) else None
-                conclusion = _StructuredConclusion.model_validate(structured)
-                content = _append_complete_rows_when_bounded(conclusion.content, attempts)
-                return StructuredAnalysisResult(
-                    sufficiency=conclusion.sufficiency,
-                    conclusion=content,
-                    gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
-                    limitations=conclusion.limitations,
-                )
+                try:
+                    result = await agent.ainvoke(
+                        {"messages": [{"role": "user", "content": json.dumps(_request_context(request))}]},
+                        config=config,
+                    )
+                    structured = result.get("structured_response") if isinstance(result, Mapping) else None
+                    conclusion = _StructuredConclusion.model_validate(structured)
+                except (StructuredOutputError, ToolCallLimitExceededError, ValidationError) as exc:
+                    logger.warning(
+                        "Recovering retained structured evidence after model-control failure "
+                        "(task_id=%s error_type=%s)",
+                        request.task_id,
+                        type(exc).__name__,
+                    )
+                    return _recovered_result(attempts, python_attempts, failure_code=type(exc).__name__)
+
+                if python_attempts and not any(attempt.succeeded for attempt in python_attempts):
+                    logger.warning(
+                        "Rejecting structured conclusion without successful Python provenance (task_id=%s)",
+                        request.task_id,
+                    )
+                    return _recovered_result(
+                        attempts,
+                        python_attempts,
+                        failure_code="python_not_successful",
+                    )
+
+                return _build_result(conclusion, attempts, python_attempts)
         except TimeoutError as exc:
             raise StructuredAnalysisTimeoutError(
                 f"Structured analysis exceeded its {self._timeout_seconds:g}-second deadline"
@@ -422,6 +486,7 @@ class StructuredAnalysisWorker:
         get_provider: Callable[[], SandboxProvider],
         request: StructuredAnalysisRequest,
         attempts: list[_GSFQueryAttempt],
+        python_attempts: list[_PythonExecutionAttempt],
         tool_lock: asyncio.Lock,
     ):
         python_calls = 0
@@ -439,6 +504,7 @@ class StructuredAnalysisWorker:
                     raise StructuredAnalysisError("execute_python is unavailable until one GSF query succeeds")
                 code_key = code.strip()
                 if code_key in code_keys:
+                    python_attempts.append(_PythonExecutionAttempt(succeeded=False, code="repeated_python"))
                     return json.dumps(
                         {
                             "status": "error",
@@ -480,6 +546,12 @@ class StructuredAnalysisWorker:
             }
             if output_is_empty:
                 payload["message"] = "Python produced no analytical output. Print the requested result explicitly."
+            python_attempts.append(
+                _PythonExecutionAttempt(
+                    succeeded=succeeded,
+                    code=None if succeeded else str(payload["code"]),
+                )
+            )
             _upload_or_raise(provider, [(output_path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))])
             return json.dumps({**payload, "code_artifact": script_path, "output_artifact": output_path})
 
@@ -494,10 +566,14 @@ def _request_context(request: StructuredAnalysisRequest) -> dict[str, Any]:
             conclusion = run.result.notes.summary
             limitations = list(run.result.notes.gaps)
             provenance = [source.locator for source in run.result.notes.sources]
+            table_evidence = None
         else:
             conclusion = run.result.conclusion
             limitations = list(run.result.limitations)
             provenance = [item.model_dump(mode="json") for item in run.result.gsf_provenance]
+            table_evidence = (
+                run.result.table_evidence.model_dump(mode="json") if run.result.table_evidence is not None else None
+            )
         dependencies.append(
             {
                 "task_id": run.task_id,
@@ -505,6 +581,7 @@ def _request_context(request: StructuredAnalysisRequest) -> dict[str, Any]:
                 "conclusion": conclusion,
                 "limitations": limitations,
                 "provenance": provenance,
+                "table_evidence": table_evidence,
             }
         )
     return {
@@ -692,28 +769,130 @@ def _model_projection(response: TextToSQLResponse, max_rows: int) -> dict[str, A
     }
 
 
-def _append_complete_rows_when_bounded(content: str, attempts: Sequence[_GSFQueryAttempt]) -> str:
-    """Preserve one small complete result when the model reduced it to a summary."""
+def _build_result(
+    conclusion: _StructuredConclusion,
+    attempts: Sequence[_GSFQueryAttempt],
+    python_attempts: Sequence[_PythonExecutionAttempt],
+) -> StructuredAnalysisResult:
+    table_evidence = None
+    if not any(attempt.succeeded for attempt in python_attempts):
+        table_evidence = _bounded_table_evidence(attempts, conclusion.content)
+    return StructuredAnalysisResult(
+        sufficiency=conclusion.sufficiency,
+        conclusion=conclusion.content,
+        gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
+        limitations=conclusion.limitations,
+        table_evidence=table_evidence,
+    )
+
+
+def _recovered_result(
+    attempts: Sequence[_GSFQueryAttempt],
+    python_attempts: Sequence[_PythonExecutionAttempt],
+    *,
+    failure_code: str,
+) -> StructuredAnalysisResult:
+    """Return retained evidence conservatively after a model-control failure."""
     successful = [attempt.outcome for attempt in attempts if isinstance(attempt.outcome, TextToSQLResponse)]
-    if len(successful) != 1:
-        return content
-    response = successful[0]
-    if response.truncated or not response.rows or _content_covers_rows(content, response.rows):
-        return content
+    limitations = ["The structured model did not produce a valid answer-ready terminal conclusion."]
+    if python_attempts and not any(attempt.succeeded for attempt in python_attempts):
+        limitations.append("No Python execution completed successfully, so no derived calculation was accepted.")
+
+    if not successful:
+        return StructuredAnalysisResult(
+            sufficiency="insufficient",
+            conclusion="No successful GSF result was available for a grounded structured conclusion.",
+            gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
+            limitations=tuple(limitations),
+        )
+
+    response = successful[-1]
+    conclusion = (
+        f"GSF returned {response.returned_row_count} row(s) in a retained structured result "
+        f"({response.citation_key}), but the worker could not validate an answer-ready conclusion."
+    )
+    table_note = " Every row from that complete GSF result is preserved in table_evidence."
+    table_evidence = _bounded_table_evidence(attempts, f"{conclusion}{table_note}")
+    if response.truncated:
+        limitations.append("GSF marked the retained result as truncated, so it cannot support a complete answer.")
+    elif response.rows and table_evidence is None:
+        limitations.append(
+            "The complete rows were not included because they exceeded the bounded downstream evidence contract."
+        )
+    elif table_evidence is not None:
+        conclusion += table_note
+    elif response.returned_row_count == 0:
+        limitations.append("The retained GSF result contained no rows.")
+    if failure_code == "python_not_successful":
+        limitations[0] = (
+            "The model's terminal conclusion was rejected because its required Python work did not succeed."
+        )
+    return StructuredAnalysisResult(
+        sufficiency="limited",
+        conclusion=conclusion,
+        gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
+        limitations=tuple(limitations),
+        table_evidence=table_evidence,
+    )
+
+
+def _bounded_table_evidence(
+    attempts: Sequence[_GSFQueryAttempt],
+    conclusion: str,
+) -> BoundedTableEvidence | None:
+    """Project the latest small complete GSF result into a typed, total-size-bounded table."""
+    successful = [attempt.outcome for attempt in attempts if isinstance(attempt.outcome, TextToSQLResponse)]
+    if not successful:
+        return None
+    response = successful[-1]
+    if (
+        response.truncated
+        or not response.rows
+        or len(response.rows) > STRUCTURED_TABLE_MAX_ROWS
+        or _content_covers_rows(conclusion, response.rows)
+    ):
+        return None
 
     column_names = [column.name for column in response.columns]
-    if not column_names and isinstance(response.rows[0], Mapping):
-        column_names = list(response.rows[0])
-    if column_names and all(isinstance(row, Mapping) for row in response.rows):
-        projected_rows = [[row.get(name) for name in column_names] for row in response.rows]
-    else:
-        projected_rows = response.rows
-    rows_json = json.dumps(projected_rows, ensure_ascii=False, separators=(",", ":"), default=str)
-    header = json.dumps(column_names, ensure_ascii=False, separators=(",", ":"))
-    addition = f"\n\nExact GSF result rows (column order {header}):\n{rows_json}"
-    if len(content) + len(addition) > STRUCTURED_CONCLUSION_MAX_CHARS:
-        return content
-    return f"{content}{addition}"
+    if not column_names:
+        column_names = list(dict.fromkeys(name for row in response.rows for name in row))
+    if not column_names or len(column_names) > STRUCTURED_TABLE_MAX_COLUMNS:
+        return None
+    by_name = {column.name: column for column in response.columns}
+    columns = tuple(
+        GSFResultColumnSummary(name=name, data_type=by_name[name].data_type if name in by_name else None)
+        for name in column_names
+    )
+    try:
+        normalized_rows = tuple(
+            json.loads(
+                json.dumps(
+                    {name: row.get(name) for name in column_names},
+                    ensure_ascii=False,
+                    default=str,
+                    allow_nan=False,
+                )
+            )
+            for row in response.rows
+        )
+        table = BoundedTableEvidence(
+            citation_key=response.citation_key,
+            columns=columns,
+            rows=normalized_rows,
+            returned_row_count=response.returned_row_count,
+        )
+    except (TypeError, ValueError, ValidationError):
+        return None
+    table_chars = len(
+        json.dumps(
+            table.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+    if len(conclusion) + table_chars > STRUCTURED_EVIDENCE_MAX_CHARS:
+        return None
+    return table
 
 
 def _content_covers_rows(content: str, rows: Sequence[Any]) -> bool:

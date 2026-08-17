@@ -10,8 +10,10 @@ from langchain_core.messages import AIMessage
 
 from aiq_agent.agents.chat_researcher.models import CatalogCandidate
 from aiq_agent.agents.chat_researcher.models import CatalogRoutingResponse
+from aiq_agent.agents.hybrid_researcher.models import BoundedTableEvidence
 from aiq_agent.agents.hybrid_researcher.models import ContinuationDecision
 from aiq_agent.agents.hybrid_researcher.models import GSFQuerySuccess
+from aiq_agent.agents.hybrid_researcher.models import GSFResultColumnSummary
 from aiq_agent.agents.hybrid_researcher.models import HybridResearchState
 from aiq_agent.agents.hybrid_researcher.models import HybridTask
 from aiq_agent.agents.hybrid_researcher.models import HybridTaskPlan
@@ -93,6 +95,32 @@ async def test_writer_context_is_compact_by_terminal_contract():
     assert len(context_text) < 20_000
     assert "rows" not in context_text
     assert "artifact" not in context_text
+
+
+async def test_writer_receives_complete_bounded_table_rows():
+    state = _state()
+    result = state.task_runs[0].result
+    assert isinstance(result, StructuredAnalysisResult)
+    table = BoundedTableEvidence(
+        citation_key="GSF request revenue-1",
+        columns=(GSFResultColumnSummary(name="quarter"), GSFResultColumnSummary(name="revenue")),
+        rows=({"quarter": "Q1", "revenue": 100}, {"quarter": "Q2", "revenue": 125}),
+        returned_row_count=2,
+    )
+    state = state.model_copy(
+        update={
+            "task_runs": [
+                state.task_runs[0].model_copy(update={"result": result.model_copy(update={"table_evidence": table})})
+            ]
+        }
+    )
+    model = _Model("Q1 was 100 and Q2 was 125 [1].\n\n**References:**\n- [1] GSF request revenue-1")
+    await HybridWriter(model, template="Static policy.", enable_citation_verification=False)(state)
+    context = json.loads(model.calls[0][0][1].content)
+    assert context["evidence"][0]["result"]["table_evidence"]["rows"] == [
+        {"quarter": "Q1", "revenue": 100},
+        {"quarter": "Q2", "revenue": 125},
+    ]
 
 
 async def test_writer_registers_gsf_citation_identity():

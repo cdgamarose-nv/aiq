@@ -124,10 +124,14 @@ def _dependent_objective(request: TaskExecutionRequest) -> str:
             conclusion = result.notes.summary
             limitations = list(result.notes.gaps)
             provenance = [source.locator for source in result.notes.sources]
+            table_evidence = None
         else:
             conclusion = result.conclusion
             limitations = list(result.limitations)
             provenance = [item.model_dump(mode="json") for item in result.gsf_provenance]
+            table_evidence = (
+                result.table_evidence.model_dump(mode="json") if result.table_evidence is not None else None
+            )
         dependencies.append(
             {
                 "task_id": run.task_id,
@@ -135,6 +139,7 @@ def _dependent_objective(request: TaskExecutionRequest) -> str:
                 "conclusion": conclusion,
                 "limitations": limitations,
                 "provenance": provenance,
+                "table_evidence": table_evidence,
             }
         )
     return (

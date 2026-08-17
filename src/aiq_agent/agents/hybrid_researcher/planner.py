@@ -9,17 +9,19 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from typing import TypeVar
 
+from langchain.agents import create_agent
+from langchain.agents.structured_output import StructuredOutputError
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langchain_core.messages import SystemMessage
-from langchain_core.runnables import Runnable
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 from pydantic import ValidationError
@@ -120,7 +122,7 @@ def validate_task_graph(
 
 
 class _StructuredDecisionInvoker:
-    """Shared one-call structured-output boundary with one strict-JSON correction."""
+    """Shared tool-call structured-output boundary with one correction attempt."""
 
     def __init__(
         self,
@@ -133,21 +135,24 @@ class _StructuredDecisionInvoker:
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        self._llm = llm
         self._schema = schema
         self._policy = render_prompt_template(load_prompt(_PROMPTS_DIR, template_name))
         self._timeout = timeout
         self._callbacks = tuple(callbacks)
         try:
-            self._structured_llm: Runnable = llm.with_structured_output(schema)
+            self._structured_agent = create_agent(
+                model=llm,
+                tools=[],
+                system_prompt=self._policy,
+                response_format=ToolStrategy(schema, handle_errors=False),
+            )
         except (NotImplementedError, ValueError) as exc:
             raise PlannerConfigurationError(
-                f"The configured model does not support {schema.__name__} structured output."
+                f"The configured model does not support {schema.__name__} tool-call output."
             ) from exc
-        json_schema = json.dumps(schema.model_json_schema(), separators=(",", ":"), ensure_ascii=False)
         self._correction = (
-            "The structured response was missing or invalid. Return exactly one JSON object matching this JSON "
-            f"Schema, without Markdown or prose:\n{json_schema}"
+            f"The structured response was missing or invalid. Call the {schema.__name__} output tool exactly once "
+            "with a schema-valid payload and no prose."
         )
 
     def _run_config(self) -> RunnableConfig | None:
@@ -155,34 +160,37 @@ class _StructuredDecisionInvoker:
 
     async def invoke(self, context: dict[str, Any]) -> _T:
         """Place stable policy first and the untrusted runtime JSON last."""
-        messages = [
-            SystemMessage(content=self._policy),
-            HumanMessage(content=json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
-        ]
+        messages = [HumanMessage(content=json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str))]
         try:
             async with asyncio.timeout(self._timeout):
                 try:
-                    response = await self._structured_llm.ainvoke(messages, config=self._run_config())
-                    if response is None:
-                        raise InvalidPlannerResponseError("The planner returned no structured response.")
-                    return self._schema.model_validate(response)
-                except (InvalidPlannerResponseError, OutputParserException, ValidationError):
-                    logger.warning("Retrying %s once as strict JSON text", self._schema.__name__)
-                    raw = await self._llm.ainvoke(
+                    return await self._invoke_agent(messages)
+                except (
+                    InvalidPlannerResponseError,
+                    OutputParserException,
+                    StructuredOutputError,
+                    ValidationError,
+                ):
+                    logger.warning("Retrying %s once as a forced output tool", self._schema.__name__)
+                    return await self._invoke_agent(
                         [*messages, HumanMessage(content=self._correction)],
-                        config=self._run_config(),
                     )
-                    content = getattr(raw, "content", raw)
-                    if not isinstance(content, str):
-                        raise InvalidPlannerResponseError("The correction did not return JSON text.")
-                    try:
-                        return self._schema.model_validate_json(content.strip())
-                    except (TypeError, ValueError, ValidationError) as exc:
-                        raise InvalidPlannerResponseError(
-                            f"The model did not return one valid {self._schema.__name__} object."
-                        ) from exc
         except TimeoutError as exc:
             raise PlannerTimeoutError(f"{self._schema.__name__} generation exceeded its timeout.") from exc
+
+    async def _invoke_agent(self, messages: list[HumanMessage]) -> _T:
+        response = await self._structured_agent.ainvoke(
+            {"messages": messages},
+            config=self._run_config(),
+        )
+        if not isinstance(response, Mapping) or response.get("structured_response") is None:
+            raise InvalidPlannerResponseError("The planner returned no structured response.")
+        try:
+            return self._schema.model_validate(response["structured_response"])
+        except ValidationError as exc:
+            raise InvalidPlannerResponseError(
+                f"The model did not return one valid {self._schema.__name__} object."
+            ) from exc
 
 
 class InitialTaskPlanner:
