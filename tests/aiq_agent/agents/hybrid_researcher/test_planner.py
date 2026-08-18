@@ -5,6 +5,7 @@
 
 from datetime import UTC
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -111,6 +112,25 @@ async def test_single_task_keeps_clarified_objective_without_procedural_drift():
     )
     plan = await InitialTaskPlanner(_Model([proposed]))(state)
     assert plan.tasks[0].objective == state.clarified_question
+
+
+async def test_initial_planner_restores_authoritative_objective_when_model_echo_is_truncated():
+    state = _state(clarified_question="A long benchmark question that must remain authoritative.")
+    proposed = HybridTaskPlan(
+        objective="A long benchmark question that was truncated by the tool-call budget",
+        tasks=(HybridTask(id="facts", kind="structured_analysis", objective="Retrieve the relevant facts."),),
+    )
+
+    plan = await InitialTaskPlanner(_Model([proposed]))(state)
+
+    assert plan.objective == state.clarified_question
+
+
+def test_planner_policy_uses_a_short_runtime_objective_sentinel() -> None:
+    policy = (Path(__file__).parents[4] / "src/aiq_agent/agents/hybrid_researcher/prompts/planner.j2").read_text()
+
+    assert "`__runtime_objective__`" in policy
+    assert "Copy the supplied objective exactly" not in policy
 
 
 def test_graph_validation_rejects_exact_duplicates_cycles_missing_dependencies_and_total_limit():

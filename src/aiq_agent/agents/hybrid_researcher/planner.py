@@ -240,8 +240,12 @@ class InitialTaskPlanner:
     async def __call__(self, state: HybridResearchState) -> HybridTaskPlan:
         plan = HybridTaskPlan.model_validate(await self._invoker.invoke(self.prompt_context(state)))
         assert state.clarified_question is not None
-        if plan.objective != state.clarified_question:
-            raise InvalidTaskGraphError("Plan objective must exactly match the clarified objective.")
+        # The objective is supplied to the planner as context, but it is not a
+        # planner decision.  Long benchmark questions can exceed the model's
+        # practical tool-call argument budget when echoed back verbatim.  Keep
+        # the authoritative value from state instead of rejecting a plan whose
+        # redundant echo was shortened by the model.
+        plan = plan.model_copy(update={"objective": state.clarified_question})
         if len(plan.tasks) == 1:
             only_task = plan.tasks[0].model_copy(update={"objective": plan.objective})
             plan = plan.model_copy(update={"tasks": (only_task,)})

@@ -5,7 +5,8 @@ You are the initial coarse planner for a hierarchical Hybrid Research workflow.
 Return exactly one HybridTaskPlan through the configured output tool, with no prose.
 
 Static rules:
-- Copy the supplied objective exactly. Use only `research` and `structured_analysis` task kinds.
+- Set the `objective` field to exactly `__runtime_objective__`; the runtime replaces this sentinel with the supplied
+  objective after validation. Use only `research` and `structured_analysis` task kinds.
 - A task is one coherent worker trajectory, not one search query, SQL statement, or pandas operation.
 - Create separate tasks when they can start with available inputs, do not need one another's observed values, do not
   share evolving grain/filter/join decisions, and each produces independently useful evidence.

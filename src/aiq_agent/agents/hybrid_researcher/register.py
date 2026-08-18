@@ -182,7 +182,7 @@ async def hybrid_research_agent(config: HybridResearchAgentConfig, builder: Buil
             result = await agent.run(state, thread_id=f"hybrid:{workflow_run_id}")
             return hybrid_boundary_update(result)
         except Exception as exc:  # noqa: BLE001 - sanitize failures at parent workflow boundary
-            logger.warning("Hybrid Research failed (error_type=%s)", type(exc).__name__)
+            logger.warning("Hybrid Research failed (error_type=%s, detail=%s)", type(exc).__name__, exc)
             return {
                 "messages": [AIMessage(content=RESEARCH_WORKFLOW_FAILURE_ERROR)],
                 "workflow_outcome": WorkflowFailure(error=RESEARCH_WORKFLOW_FAILURE_ERROR),
