@@ -84,6 +84,16 @@ def _response(question: str = "Revenue by quarter") -> TextToSQLResponse:
     )
 
 
+def _verified_evidence_alignment() -> dict[str, Any]:
+    return {
+        "sources_and_joins": "verified",
+        "grain_and_output_shape": "verified",
+        "measures_and_formulas": "verified",
+        "filters_and_time_basis": "verified",
+        "notes": ["The returned SQL and rows match the synthetic task contract."],
+    }
+
+
 async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
     provider = _Provider()
     captured: dict[str, Any] = {}
@@ -103,6 +113,7 @@ async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
                     "sufficiency": "sufficient",
                     "content": "Revenue increased from 100 to 125.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -135,9 +146,77 @@ async def test_one_useful_gsf_response_returns_compact_provenance(monkeypatch):
     assert "within 8000 characters" in captured["system_prompt"]
     assert '"successful_gsf_responses"' in captured["system_prompt"]
     assert "rows_projection_truncated" in captured["system_prompt"]
+    assert "sources and necessary joins" in captured["system_prompt"]
+    assert "A plausible\n  row count or polished response is not verification" in captured["system_prompt"]
     assert sandbox_names == []
     assert provider.upload_calls == []
     assert not provider.closed and not provider.terminated
+
+
+async def test_unresolved_evidence_alignment_downgrades_sufficient_conclusion(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "The returned rows contain quarterly revenue.",
+                    "limitations": [],
+                    "evidence_alignment": {
+                        **_verified_evidence_alignment(),
+                        "measures_and_formulas": "mismatch",
+                        "notes": ["The SQL counted records instead of summing the requested revenue measure."],
+                    },
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert result.table_evidence is not None
+    assert any("measures and formulas" in limitation for limitation in result.limitations)
+    assert any("counted records" in limitation for limitation in result.limitations)
+
+
+async def test_missing_evidence_alignment_recovers_retained_rows(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class Agent:
+        async def ainvoke(self, _state, config=None):
+            await captured["tools"][0].ainvoke({"question": "Revenue by quarter"})
+            return {
+                "structured_response": {
+                    "sufficiency": "sufficient",
+                    "content": "Revenue increased from 100 to 125.",
+                    "limitations": [],
+                }
+            }
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return Agent()
+
+    monkeypatch.setattr("aiq_agent.agents.hybrid_researcher.structured_analysis.create_agent", fake_create_agent)
+    result = await StructuredAnalysisWorker(
+        llm=object(),
+        gsf_invoke=lambda _request: asyncio.sleep(0, result=_response()),
+        sandbox_factory=lambda _name: _Provider(),
+    ).run(_request())
+
+    assert result.sufficiency == "limited"
+    assert result.table_evidence is not None
+    assert "did not produce a valid" in result.limitations[0]
 
 
 async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
@@ -160,6 +239,7 @@ async def test_complete_gsf_payload_stays_worker_local(monkeypatch):
                     "sufficiency": "sufficient",
                     "content": "The requested population contains 1,000 returned rows.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -212,6 +292,7 @@ async def test_small_complete_rows_are_preserved_when_model_only_summarizes(monk
                     "sufficiency": "sufficient",
                     "content": "Two daily volume records were returned.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -286,6 +367,7 @@ async def test_latest_complete_gsf_table_is_preserved_after_corrected_followup(m
                     "sufficiency": "sufficient",
                     "content": "Two category totals were returned.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -383,6 +465,7 @@ async def test_gsf_errors_are_retained_and_do_not_disappear(monkeypatch):
                     "sufficiency": "insufficient",
                     "content": "No enterprise rows were available.",
                     "limitations": ["GSF was unavailable."],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -425,6 +508,7 @@ async def test_transport_failure_rejects_semantic_rephrasing_without_second_upst
                     "sufficiency": "insufficient",
                     "content": "No enterprise evidence was returned.",
                     "limitations": ["GSF timed out."],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -460,6 +544,7 @@ async def test_successful_wrong_grain_allows_materially_different_followup(monke
                     "sufficiency": "sufficient",
                     "content": "The corrected quarterly result supports the analysis.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -494,6 +579,7 @@ async def test_python_requires_success_then_reads_complete_manifest(monkeypatch)
                     "sufficiency": "sufficient",
                     "content": "Derived comparison complete.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -542,6 +628,7 @@ async def test_later_python_call_refreshes_manifest_with_new_gsf_success(monkeyp
                     "sufficiency": "sufficient",
                     "content": "Both complete results were analyzed.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -686,6 +773,7 @@ async def test_exact_repeated_questions_are_rejected_and_retained(monkeypatch):
                     "sufficiency": "limited",
                     "content": "The first result was retained.",
                     "limitations": ["Repeated calls are prohibited."],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -920,6 +1008,7 @@ async def test_exact_repeated_python_is_rejected_without_execution(monkeypatch):
                     "sufficiency": "sufficient",
                     "content": "The first calculation established the result.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -956,6 +1045,7 @@ async def test_empty_python_output_requires_a_corrected_call(monkeypatch):
                     "sufficiency": "limited",
                     "content": "The calculation produced no inspectable output.",
                     "limitations": ["Python did not print an analytical result."],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 
@@ -989,6 +1079,7 @@ async def test_sufficient_conclusion_is_rejected_when_all_python_attempts_fail(m
                     "sufficiency": "sufficient",
                     "content": "Python calculated an average of 185.94.",
                     "limitations": [],
+                    "evidence_alignment": _verified_evidence_alignment(),
                 }
             }
 

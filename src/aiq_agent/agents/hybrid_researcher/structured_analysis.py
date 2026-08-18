@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 from gsf.errors import GSFErrorCode
 from gsf.errors import GSFToolError
@@ -53,6 +54,7 @@ from .models import GSF_PROVENANCE_MAX_METADATA_CHARS
 from .models import GSF_PROVENANCE_MAX_METADATA_ITEMS
 from .models import STRUCTURED_CONCLUSION_MAX_CHARS
 from .models import STRUCTURED_EVIDENCE_MAX_CHARS
+from .models import STRUCTURED_LIMITATION_MAX_CHARS
 from .models import STRUCTURED_MAX_LIMITATIONS
 from .models import STRUCTURED_TABLE_MAX_COLUMNS
 from .models import STRUCTURED_TABLE_MAX_ROWS
@@ -102,6 +104,18 @@ class _ExecutePythonInput(BaseModel):
     code: str = Field(min_length=1)
 
 
+class _EvidenceAlignment(BaseModel):
+    """Model-authored audit of the latest evidence against the structured task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sources_and_joins: Literal["verified", "mismatch", "uncertain"]
+    grain_and_output_shape: Literal["verified", "mismatch", "uncertain"]
+    measures_and_formulas: Literal["verified", "mismatch", "uncertain"]
+    filters_and_time_basis: Literal["verified", "mismatch", "uncertain"]
+    notes: tuple[StructuredLimitationText, ...] = Field(min_length=1, max_length=4)
+
+
 class _StructuredConclusion(BaseModel):
     """Model-authored portion of a structured-analysis result."""
 
@@ -110,6 +124,7 @@ class _StructuredConclusion(BaseModel):
     sufficiency: str = Field(pattern=r"^(sufficient|limited|insufficient)$")
     content: StructuredConclusionText
     limitations: tuple[StructuredLimitationText, ...] = Field(default=(), max_length=STRUCTURED_MAX_LIMITATIONS)
+    evidence_alignment: _EvidenceAlignment
 
 
 @dataclass(frozen=True)
@@ -774,14 +789,35 @@ def _build_result(
     attempts: Sequence[_GSFQueryAttempt],
     python_attempts: Sequence[_PythonExecutionAttempt],
 ) -> StructuredAnalysisResult:
+    sufficiency = conclusion.sufficiency
+    limitations = list(conclusion.limitations)
+    alignment = conclusion.evidence_alignment
+    alignment_fields = {
+        "sources and joins": alignment.sources_and_joins,
+        "grain and output shape": alignment.grain_and_output_shape,
+        "measures and formulas": alignment.measures_and_formulas,
+        "filters and time basis": alignment.filters_and_time_basis,
+    }
+    unresolved = [name for name, status in alignment_fields.items() if status != "verified"]
+    if unresolved:
+        if sufficiency == "sufficient":
+            sufficiency = "limited"
+        if len(limitations) < STRUCTURED_MAX_LIMITATIONS:
+            detail = " ".join(alignment.notes)
+            limitation, _ = _bounded_text(
+                f"GSF evidence was not fully verified for {', '.join(unresolved)}. {detail}",
+                STRUCTURED_LIMITATION_MAX_CHARS,
+            )
+            limitations.append(limitation)
+
     table_evidence = None
     if not any(attempt.succeeded for attempt in python_attempts):
         table_evidence = _bounded_table_evidence(attempts, conclusion.content)
     return StructuredAnalysisResult(
-        sufficiency=conclusion.sufficiency,
+        sufficiency=sufficiency,
         conclusion=conclusion.content,
         gsf_provenance=tuple(_provenance_summary(attempt) for attempt in attempts),
-        limitations=conclusion.limitations,
+        limitations=tuple(limitations),
         table_evidence=table_evidence,
     )
 
